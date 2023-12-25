@@ -71,6 +71,38 @@ static void PointToPointDistanceFunction(DataChunk &args, ExpressionState &state
 }
 
 //------------------------------------------------------------------------------
+// POINT_2D - POINT_2D Spherical
+//------------------------------------------------------------------------------
+static void PointToPointSphericalDistanceFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	D_ASSERT(args.data.size() == 2);
+	auto &left = args.data[0];
+	auto &right = args.data[1];
+	auto count = args.size();
+	// D_ASSERT(count == 1);
+
+	left.Flatten(count);
+	right.Flatten(count);
+
+	auto &left_entries = StructVector::GetEntries(left);
+	auto &right_entries = StructVector::GetEntries(right);
+
+	auto left_x = FlatVector::GetData<double>(*left_entries[0]);
+	auto left_y = FlatVector::GetData<double>(*left_entries[1]);
+	auto right_x = FlatVector::GetData<double>(*right_entries[0]);
+	auto right_y = FlatVector::GetData<double>(*right_entries[1]);
+
+	auto out_data = FlatVector::GetData<double>(result);
+	for (idx_t i = 0; i < count; i++) {
+		out_data[i] = 2 * 6371 * std::asin(std::sqrt(0.5 - (std::cos((left_y[i] - right_y[i]) * (M_PI / 180)) / 2) + (
+			std::cos(right_y[i] * (M_PI / 180)) * std::cos(left_y[i] * (M_PI / 180)) * ((1 - std::cos((left_x[i] - right_x[i]) * (M_PI / 180) ) ) / 2))));
+	}
+
+	if(count == 1) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+//------------------------------------------------------------------------------
 // POINT_2D - LINESTRING_2D
 //------------------------------------------------------------------------------
 
@@ -152,6 +184,15 @@ void CoreScalarFunctions::RegisterStDistance(DatabaseInstance &db) {
 	                                                 LogicalType::DOUBLE, PointToLineStringDistanceFunction));
 	distance_function_set.AddFunction(ScalarFunction({GeoTypes::LINESTRING_2D(), GeoTypes::POINT_2D()},
 	                                                 LogicalType::DOUBLE, LineStringToPointDistanceFunction));
+
+	ExtensionUtil::RegisterFunction(db, distance_function_set);
+}
+
+void CoreScalarFunctions::RegisterStDistanceSpherical(DatabaseInstance &db) {
+	ScalarFunctionSet distance_function_set("ST_DistanceSpherical");
+
+	distance_function_set.AddFunction(ScalarFunction({GeoTypes::POINT_2D(), GeoTypes::POINT_2D()}, LogicalType::DOUBLE,
+	                                                 PointToPointSphericalDistanceFunction));
 
 	ExtensionUtil::RegisterFunction(db, distance_function_set);
 }

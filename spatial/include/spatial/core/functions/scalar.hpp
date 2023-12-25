@@ -19,6 +19,8 @@ public:
 		RegisterStContains(db);
 		RegisterStDimension(db);
 		RegisterStDistance(db);
+		// TODO: DuckDB seems to not support optional arguments (for spherical=false) for scalar function so i added new function.
+		RegisterStDistanceSpherical(db);
 		RegisterStDump(db);
 		RegisterStEndPoint(db);
 		RegisterStExtent(db);
@@ -84,6 +86,9 @@ private:
 
 	// ST_Distance
 	static void RegisterStDistance(DatabaseInstance &db);
+
+	// ST_DistanceSpherical
+	static void RegisterStDistanceSpherical(DatabaseInstance &db);
 
 	// ST_Dump
 	static void RegisterStDump(DatabaseInstance &db);
