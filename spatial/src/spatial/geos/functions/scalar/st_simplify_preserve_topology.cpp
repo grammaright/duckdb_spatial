@@ -17,14 +17,27 @@ using namespace spatial::core;
 static void SimplifyPreserveTopologyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto &ctx = lstate.ctx.GetCtx();
-	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t input, double distance) {
+	BinaryExecutor::Execute<geometry_t, double, geometry_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](geometry_t input, double distance) {
 		    auto geom = lstate.ctx.Deserialize(input);
 		    auto simplified = make_uniq_geos(ctx, GEOSTopologyPreserveSimplify_r(ctx, geom.get(), distance));
 		    return lstate.ctx.Serialize(result, simplified);
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+Returns a simplified geometry but avoids creating invalid topologies
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStSimplifyPreserveTopology(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_SimplifyPreserveTopology");
@@ -34,6 +47,7 @@ void GEOSScalarFunctions::RegisterStSimplifyPreserveTopology(DatabaseInstance &d
 	                               GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_SimplifyPreserveTopology", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

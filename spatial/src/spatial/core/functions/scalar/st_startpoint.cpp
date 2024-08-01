@@ -64,27 +64,32 @@ static void GeometryStartPointFunction(DataChunk &args, ExpressionState &state, 
 	auto &geom_vec = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    geom_vec, result, count, [&](string_t input, ValidityMask &mask, idx_t row_idx) {
-		    auto header = GeometryHeader::Get(input);
-		    if (header.type != GeometryType::LINESTRING) {
-			    mask.SetInvalid(row_idx);
-			    return string_t();
-		    }
+	UnaryExecutor::ExecuteWithNulls<geometry_t, geometry_t>(geom_vec, result, count,
+	                                                        [&](geometry_t input, ValidityMask &mask, idx_t row_idx) {
+		                                                        if (input.GetType() != GeometryType::LINESTRING) {
+			                                                        mask.SetInvalid(row_idx);
+			                                                        return geometry_t {};
+		                                                        }
 
-		    auto line = lstate.factory.Deserialize(input).GetLineString();
-		    auto point_count = line.Count();
-
-		    if (point_count == 0) {
-			    mask.SetInvalid(row_idx);
-			    return string_t();
-		    }
-
-		    auto point = line.Vertices().Get(0);
-		    return lstate.factory.Serialize(result, Geometry(lstate.factory.CreatePoint(point.x, point.y)));
-	    });
+		                                                        auto line = Geometry::Deserialize(lstate.arena, input);
+		                                                        if (LineString::IsEmpty(line)) {
+			                                                        mask.SetInvalid(row_idx);
+			                                                        return geometry_t {};
+		                                                        }
+		                                                        auto point = LineString::GetPointAsReference(line, 0);
+		                                                        return Geometry::Serialize(point, result);
+	                                                        });
 }
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+Returns the first point of a line geometry
+)";
 
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -97,6 +102,7 @@ void CoreScalarFunctions::RegisterStStartPoint(DatabaseInstance &db) {
 	set.AddFunction(ScalarFunction({GeoTypes::LINESTRING_2D()}, GeoTypes::POINT_2D(), LineStringStartPointFunction));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_StartPoint", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

@@ -15,16 +15,15 @@ set(EXTENSION_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/st_distance_within.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_envelope.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_equals.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/st_geomfromtext.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_intersection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_intersects.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/st_is_closed.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_is_ring.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_is_simple.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_is_valid.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_linemerge.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_makevalid.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_normalize.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/st_shortestline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_overlaps.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_pointonsurface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_reduceprecision.cpp

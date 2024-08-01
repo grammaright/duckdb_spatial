@@ -3,7 +3,6 @@
 #include "spatial/core/functions/scalar.hpp"
 #include "spatial/core/functions/common.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/types.hpp"
 
 namespace spatial {
@@ -65,7 +64,7 @@ static void PointToPointDistanceFunction(DataChunk &args, ExpressionState &state
 		out_data[i] = std::sqrt(std::pow(left_x[i] - right_x[i], 2) + std::pow(left_y[i] - right_y[i], 2));
 	}
 
-	if(count == 1) {
+	if (count == 1) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }

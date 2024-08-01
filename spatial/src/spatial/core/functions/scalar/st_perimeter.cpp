@@ -4,7 +4,6 @@
 #include "spatial/common.hpp"
 #include "spatial/core/types.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/functions/common.hpp"
 #include "spatial/core/functions/scalar.hpp"
 
@@ -72,55 +71,22 @@ static void Box2DPerimeterFunction(DataChunk &args, ExpressionState &state, Vect
 //------------------------------------------------------------------------------
 // GEOMETRY
 //------------------------------------------------------------------------------
-static double PolygonPerimeter(const Polygon &poly) {
-	double perimeter = 0;
-	for (auto &ring : poly.Rings()) {
-		for (uint32_t i = 0; i < ring.Count() - 1; i++) {
-			auto v1 = ring.Get(i);
-			auto v2 = ring.Get(i + 1);
-			perimeter += std::sqrt(std::pow(v1.x - v2.x, 2) + std::pow(v1.y - v2.y, 2));
-		}
-	}
-	return perimeter;
-}
-
-static double GeometryPerimeter(const Geometry &geom) {
-	switch (geom.Type()) {
-	case core::GeometryType::POLYGON: {
-		auto &poly = geom.GetPolygon();
-		return PolygonPerimeter(poly);
-	}
-	case core::GeometryType::MULTIPOLYGON: {
-		auto &mpoly = geom.GetMultiPolygon();
-		double total_perimeter = 0;
-		for (auto &poly : mpoly) {
-			total_perimeter += PolygonPerimeter(poly);
-		}
-		return total_perimeter;
-	}
-	case core::GeometryType::GEOMETRYCOLLECTION: {
-		auto &coll = geom.GetGeometryCollection();
-		double total_perimeter = 0;
-		for (auto &subgeom : coll) {
-			total_perimeter += GeometryPerimeter(subgeom);
-		}
-		return total_perimeter;
-	}
-	default: {
-		return 0.0;
-	}
-	}
-}
-
 static void GeometryPerimeterFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = core::GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, double>(input, result, count, [&](string_t input) {
-		auto geometry = lstate.factory.Deserialize(input);
-		return GeometryPerimeter(geometry);
+	UnaryExecutor::Execute<geometry_t, double>(input, result, count, [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(arena, input);
+		double perimeter = 0.0;
+		Geometry::ExtractPolygons(geom, [&](const Geometry &poly) {
+			for (auto &p : Polygon::Parts(poly)) {
+				perimeter += LineString::Length(p);
+			}
+		});
+		return perimeter;
 	});
 
 	if (count == 1) {
@@ -128,6 +94,22 @@ static void GeometryPerimeterFunction(DataChunk &args, ExpressionState &state, V
 	}
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the length of the perimeter of the geometry
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterStPerimeter(DatabaseInstance &db) {
 
 	// Perimiter
@@ -138,6 +120,7 @@ void CoreScalarFunctions::RegisterStPerimeter(DatabaseInstance &db) {
 	                               nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Perimeter", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

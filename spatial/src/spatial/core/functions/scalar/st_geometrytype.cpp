@@ -2,7 +2,6 @@
 #include "spatial/common.hpp"
 #include "spatial/core/functions/scalar.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/functions/common.hpp"
 #include "spatial/core/types.hpp"
 
@@ -14,20 +13,12 @@ static unique_ptr<FunctionData> GeometryTypeFunctionBind(ClientContext &context,
                                                          vector<unique_ptr<Expression>> &arguments) {
 	// Create an enum type for all geometry types
 	// Ensure that these are in the same order as the GeometryType enum
-	vector<string_t> enum_values = {"POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON",
-	                                "GEOMETRYCOLLECTION",
-	                                // or...
-	                                "UNKNOWN"};
+	vector<string> enum_values = {"POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON",
+	                              "GEOMETRYCOLLECTION",
+	                              // or...
+	                              "UNKNOWN"};
 
-	auto varchar_vector = Vector(LogicalType::VARCHAR, enum_values.size());
-	auto varchar_data = FlatVector::GetData<string_t>(varchar_vector);
-	for (idx_t i = 0; i < enum_values.size(); i++) {
-		auto str = enum_values[i];
-		varchar_data[i] = str.IsInlined() ? str : StringVector::AddString(varchar_vector, str);
-	}
-	auto enum_type = LogicalType::ENUM("GEOMETRY_TYPE", varchar_vector, enum_values.size());
-	enum_type.SetAlias("GEOMETRY_TYPE");
-	bound_function.return_type = enum_type;
+	bound_function.return_type = GeoTypes::CreateEnumType("GEOMETRY_TYPE", enum_values);
 
 	return nullptr;
 }
@@ -60,18 +51,47 @@ static void Polygon2DTypeFunction(DataChunk &args, ExpressionState &state, Vecto
 // GEOMETRY
 //------------------------------------------------------------------------------
 static void GeometryTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-
-	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
-
+	const auto count = args.size();
 	auto &input = args.data[0];
-	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, uint8_t>(input, result, count, [&](string_t input) {
-		auto geom = lstate.factory.Deserialize(input);
-		return static_cast<uint8_t>(geom.Type());
+	UnaryExecutor::Execute<geometry_t, uint8_t>(
+	    input, result, count, [&](const geometry_t &geom) {
+		    return static_cast<uint8_t>(geom.GetType());
+	    });
+}
+
+//------------------------------------------------------------------------------
+// WKB
+//------------------------------------------------------------------------------
+static void WKBTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const auto count = args.size();
+	auto &input = args.data[0];
+
+	UnaryExecutor::Execute<string_t, uint8_t>(input, result, count, [&](const string_t &blob) {
+		Cursor cursor(blob);
+		const auto le = cursor.Read<uint8_t>();
+		const auto type = le ? cursor.Read<uint32_t>() : cursor.ReadBigEndian<uint32_t>();
+		const auto normalized_type = (type & 0xffff) % 1000;
+		if(normalized_type == 0 || normalized_type > 7) {
+			throw InvalidInputException("WKB type '%d' is not a supported geometry type", type);
+		}
+
+		// Return the geometry type
+		// Subtract 1 since the WKB type is 1-indexed
+		return static_cast<uint8_t>(normalized_type - 1);
 	});
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns a 'GEOMETRY_TYPE' enum identifying the input geometry type.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -84,11 +104,14 @@ void CoreScalarFunctions::RegisterStGeometryType(DatabaseInstance &db) {
 	                                             Linestring2DTypeFunction, GeometryTypeFunctionBind));
 	geometry_type_set.AddFunction(
 	    ScalarFunction({GeoTypes::POLYGON_2D()}, LogicalType::ANY, Polygon2DTypeFunction, GeometryTypeFunctionBind));
-	geometry_type_set.AddFunction(ScalarFunction({GeoTypes::GEOMETRY()}, LogicalType::ANY, GeometryTypeFunction,
-	                                             GeometryTypeFunctionBind, nullptr, nullptr,
-	                                             GeometryFunctionLocalState::Init));
+	geometry_type_set.AddFunction(
+	    ScalarFunction({GeoTypes::GEOMETRY()}, LogicalType::ANY, GeometryTypeFunction, GeometryTypeFunctionBind));
+
+	geometry_type_set.AddFunction(
+		ScalarFunction({GeoTypes::WKB_BLOB()}, LogicalType::ANY, WKBTypeFunction, GeometryTypeFunctionBind));
 
 	ExtensionUtil::RegisterFunction(db, geometry_type_set);
+	DocUtil::AddDocumentation(db, "ST_GeometryType", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

@@ -5,8 +5,6 @@
 
 #include "spatial/common.hpp"
 #include "spatial/core/functions/scalar.hpp"
-#include "spatial/core/functions/common.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/types.hpp"
 #include "spatial/core/geometry/wkb_writer.hpp"
 
@@ -23,26 +21,19 @@ void GeometryAsHEXWKBFunction(DataChunk &args, ExpressionState &state, Vector &r
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	vector<data_t> buffer;
+	UnaryExecutor::Execute<geometry_t, string_t>(input, result, count, [&](geometry_t input) {
+		buffer.clear();
+		WKBWriter::Write(input, buffer);
 
-	UnaryExecutor::Execute<string_t, string_t>(input, result, count, [&](string_t input) {
-		auto geometry = lstate.factory.Deserialize(input);
-		auto wkb_size = WKBWriter::GetRequiredSize(geometry);
-		unique_ptr<data_t[]> wkb_blob(new data_t[wkb_size]);
-
-		auto wkb_ptr = wkb_blob.get();
-		WKBWriter::Write(geometry, wkb_ptr);
-
-		auto blob_size = wkb_size * 2; // every byte is rendered as two characters
+		auto blob_size = buffer.size() * 2; // every byte is rendered as two characters
 		auto blob_str = StringVector::EmptyString(result, blob_size);
 		auto blob_ptr = blob_str.GetDataWriteable();
 
 		idx_t str_idx = 0;
-		wkb_ptr = wkb_blob.get(); // reset
-		for (idx_t i = 0; i < wkb_size; i++) {
-			auto byte_a = wkb_ptr[i] >> 4;
-			auto byte_b = wkb_ptr[i] & 0x0F;
-
+		for (auto byte : buffer) {
+			auto byte_a = byte >> 4;
+			auto byte_b = byte & 0x0F;
 			blob_ptr[str_idx++] = Blob::HEX_TABLE[byte_a];
 			blob_ptr[str_idx++] = Blob::HEX_TABLE[byte_b];
 		}
@@ -53,13 +44,26 @@ void GeometryAsHEXWKBFunction(DataChunk &args, ExpressionState &state, Vector &r
 }
 
 //------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the geometry as a HEXWKB string
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+SELECT ST_AsHexWKB('POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))'::geometry);
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "conversion"}};
+
+//------------------------------------------------------------------------------
 //  Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterStAsHEXWKB(DatabaseInstance &db) {
-
-	ScalarFunction func("ST_AsHEXWKB", {GeoTypes::GEOMETRY()}, LogicalType::VARCHAR, GeometryAsHEXWKBFunction, nullptr,
-	                    nullptr, nullptr, GeometryFunctionLocalState::Init);
+	ScalarFunction func("ST_AsHEXWKB", {GeoTypes::GEOMETRY()}, LogicalType::VARCHAR, GeometryAsHEXWKBFunction);
 	ExtensionUtil::RegisterFunction(db, func);
+	DocUtil::AddDocumentation(db, "ST_AsHEXWKB", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

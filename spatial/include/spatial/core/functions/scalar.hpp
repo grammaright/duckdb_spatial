@@ -26,11 +26,17 @@ public:
 		RegisterStExtent(db);
 		RegisterStExteriorRing(db);
 		RegisterStFlipCoordinates(db);
+		RegisterStForce(db);
 		RegisterStGeometryType(db);
 		RegisterStGeomFromHEXWKB(db);
+		RegisterStGeomFromText(db);
 		RegisterStGeomFromWKB(db);
+		RegisterStHas(db);
+		RegisterStHaversine(db);
+		RegisterStHilbert(db);
 		RegisterStIntersects(db);
 		RegisterStIntersectsExtent(db);
+		RegisterStIsClosed(db);
 		RegisterStIsEmpty(db);
 		RegisterStLength(db);
 		RegisterStMakeEnvelope(db);
@@ -42,6 +48,7 @@ public:
 		RegisterStPerimeter(db);
 		RegisterStPoint(db);
 		RegisterStPointN(db);
+		RegisterStPoints(db);
 		RegisterStQuadKey(db);
 		RegisterStRemoveRepeatedPoints(db);
 		RegisterStStartPoint(db);
@@ -51,6 +58,12 @@ public:
 		RegisterStY(db);
 		RegisterStYMax(db);
 		RegisterStYMin(db);
+		RegisterStZ(db);
+		RegisterStZMax(db);
+		RegisterStZMin(db);
+		RegisterStM(db);
+		RegisterStMMax(db);
+		RegisterStMMin(db);
 	}
 
 private:
@@ -105,20 +118,38 @@ private:
 	// ST_FlipCoordinates
 	static void RegisterStFlipCoordinates(DatabaseInstance &db);
 
+	// ST_Force(2D/3D)
+	static void RegisterStForce(DatabaseInstance &db);
+
 	// ST_GeometryType
 	static void RegisterStGeometryType(DatabaseInstance &db);
 
 	// ST_GeomFromHEXWKB
 	static void RegisterStGeomFromHEXWKB(DatabaseInstance &db);
 
+	// ST_GeomFromText
+	static void RegisterStGeomFromText(DatabaseInstance &db);
+
 	// ST_GeomFromWKB
 	static void RegisterStGeomFromWKB(DatabaseInstance &db);
+
+	// ST_Has(M/Z) + ST_ZMFlag
+	static void RegisterStHas(DatabaseInstance &db);
+
+	// ST_Haversine
+	static void RegisterStHaversine(DatabaseInstance &db);
+
+	// ST_Hilbert
+	static void RegisterStHilbert(DatabaseInstance &db);
 
 	// ST_Intersects
 	static void RegisterStIntersects(DatabaseInstance &db);
 
 	// ST_IntersectsExtent (&&)
 	static void RegisterStIntersectsExtent(DatabaseInstance &db);
+
+	// ST_IsClosed
+	static void RegisterStIsClosed(DatabaseInstance &db);
 
 	// ST_IsEmpty
 	static void RegisterStIsEmpty(DatabaseInstance &db);
@@ -153,6 +184,9 @@ private:
 	// ST_PointN
 	static void RegisterStPointN(DatabaseInstance &db);
 
+	// ST_Points
+	static void RegisterStPoints(DatabaseInstance &db);
+
 	// ST_RemoveRepeatedPoints
 	static void RegisterStRemoveRepeatedPoints(DatabaseInstance &db);
 
@@ -179,6 +213,24 @@ private:
 
 	// ST_YMin
 	static void RegisterStYMin(DatabaseInstance &db);
+
+	// ST_Z
+	static void RegisterStZ(DatabaseInstance &db);
+
+	// ST_ZMax
+	static void RegisterStZMax(DatabaseInstance &db);
+
+	// ST_ZMin
+	static void RegisterStZMin(DatabaseInstance &db);
+
+	// ST_M
+	static void RegisterStM(DatabaseInstance &db);
+
+	// ST_MMax
+	static void RegisterStMMax(DatabaseInstance &db);
+
+	// ST_MMin
+	static void RegisterStMMin(DatabaseInstance &db);
 };
 
 } // namespace core

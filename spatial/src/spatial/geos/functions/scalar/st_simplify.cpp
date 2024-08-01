@@ -17,14 +17,27 @@ using namespace spatial::core;
 static void SimplifyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto &ctx = lstate.ctx.GetCtx();
-	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t input, double distance) {
+	BinaryExecutor::Execute<geometry_t, double, geometry_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](geometry_t input, double distance) {
 		    auto geom = lstate.ctx.Deserialize(input);
 		    auto simplified = make_uniq_geos(ctx, GEOSSimplify_r(ctx, geom.get(), distance));
 		    return lstate.ctx.Serialize(result, simplified);
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+Simplifies the input geometry by collapsing edges smaller than 'distance'
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStSimplify(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_Simplify");
@@ -33,6 +46,7 @@ void GEOSScalarFunctions::RegisterStSimplify(DatabaseInstance &db) {
 	                               nullptr, nullptr, nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Simplify", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

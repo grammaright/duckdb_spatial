@@ -67,71 +67,46 @@ static void BoxNumPointsFunction(DataChunk &args, ExpressionState &state, Vector
 //------------------------------------------------------------------------------
 // GEOMETRY
 //------------------------------------------------------------------------------
-static uint32_t GetVertexCount(const Geometry &geometry) {
-	switch (geometry.Type()) {
-	case GeometryType::POINT:
-		return geometry.GetPoint().IsEmpty() ? 0U : 1U;
-	case GeometryType::LINESTRING:
-		return geometry.GetLineString().Count();
-	case GeometryType::POLYGON: {
-		auto &polygon = geometry.GetPolygon();
-		uint32_t count = 0;
-		for (auto &ring : polygon.Rings()) {
-			count += ring.Count();
-		}
-		return count;
-	}
-	case GeometryType::MULTIPOINT: {
-		uint32_t count = 0;
-		for (auto &point : geometry.GetMultiPoint()) {
-			if (!point.IsEmpty()) {
-				count++;
-			}
-		}
-		return count;
-	}
-	case GeometryType::MULTILINESTRING: {
-		uint32_t count = 0;
-		for (auto &linestring : geometry.GetMultiLineString()) {
-			if (!linestring.IsEmpty()) {
-				count += linestring.Count();
-			}
-		}
-		return count;
-	}
-	case GeometryType::MULTIPOLYGON: {
-		uint32_t count = 0;
-		for (auto &polygon : geometry.GetMultiPolygon()) {
-			for (auto &ring : polygon.Rings()) {
-				count += ring.Count();
-			}
-		}
-		return count;
-	}
-	case GeometryType::GEOMETRYCOLLECTION: {
-		uint32_t count = 0;
-		for (auto &geom : geometry.GetGeometryCollection()) {
-			count += GetVertexCount(geom);
-		}
-		return count;
-	}
-	default:
-		throw NotImplementedException(
-		    StringUtil::Format("Geometry type %d not supported", static_cast<int>(geometry.Type())));
-	}
-}
-static void GeometryNumPointsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
-	auto &ctx = GeometryFunctionLocalState::ResetAndGet(state);
+static void GeometryNumPointsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, uint32_t>(input, result, count, [&](string_t input) {
-		auto geometry = ctx.factory.Deserialize(input);
-		return GetVertexCount(geometry);
+	struct op {
+		static uint32_t Case(Geometry::Tags::SinglePartGeometry, const Geometry &geom) {
+			return geom.Count();
+		}
+		static uint32_t Case(Geometry::Tags::MultiPartGeometry, const Geometry &geom) {
+			uint32_t count = 0;
+			for (uint32_t i = 0; i < MultiPartGeometry::PartCount(geom); i++) {
+				auto part = MultiPartGeometry::Part(geom, i);
+				count += Geometry::Match<op>(part);
+			}
+			return count;
+		}
+	};
+
+	UnaryExecutor::Execute<geometry_t, uint32_t>(input, result, count, [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(arena, input);
+		return Geometry::Match<op>(geom);
 	});
 }
+
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the number of vertices within a geometry
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
 
 //------------------------------------------------------------------------------
 // Register functions
@@ -152,6 +127,7 @@ void CoreScalarFunctions::RegisterStNPoints(DatabaseInstance &db) {
 		                                             GeometryFunctionLocalState::Init));
 
 		ExtensionUtil::RegisterFunction(db, area_function_set);
+		DocUtil::AddDocumentation(db, alias, DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 	}
 }
 

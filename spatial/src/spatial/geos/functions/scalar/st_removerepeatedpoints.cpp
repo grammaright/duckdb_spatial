@@ -21,7 +21,7 @@ static void RemoveRepeatedPointsFunction(DataChunk &args, ExpressionState &state
 
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto ctx = lstate.ctx.GetCtx();
-	UnaryExecutor::Execute<string_t, string_t>(input, result, count, [&](string_t input) {
+	UnaryExecutor::Execute<geometry_t, geometry_t>(input, result, count, [&](geometry_t input) {
 		auto geom = lstate.ctx.Deserialize(input);
 		auto result_geom = make_uniq_geos(ctx, GEOSRemoveRepeatedPoints_r(ctx, geom.get(), 0));
 		return lstate.ctx.Serialize(result, result_geom);
@@ -37,14 +37,27 @@ static void RemoveRepeatedPointsFunctionWithTolerance(DataChunk &args, Expressio
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto ctx = lstate.ctx.GetCtx();
 
-	BinaryExecutor::Execute<string_t, double, string_t>(
-	    input, tolerance, result, count, [&](string_t input, double tolerance) {
+	BinaryExecutor::Execute<geometry_t, double, geometry_t>(
+	    input, tolerance, result, count, [&](geometry_t input, double tolerance) {
 		    auto geom = lstate.ctx.Deserialize(input);
 		    auto result_geom = make_uniq_geos(ctx, GEOSRemoveRepeatedPoints_r(ctx, geom.get(), tolerance));
 		    return lstate.ctx.Serialize(result, result_geom);
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns a new geometry with repeated points removed, optionally within a target distance of eachother.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStRemoveRepeatedPoints(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_RemoveRepeatedPoints");
@@ -56,6 +69,7 @@ void GEOSScalarFunctions::RegisterStRemoveRepeatedPoints(DatabaseInstance &db) {
 	                               GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::AddFunctionOverload(db, set);
+	DocUtil::AddDocumentation(db, "ST_RemoveRepeatedPoints", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

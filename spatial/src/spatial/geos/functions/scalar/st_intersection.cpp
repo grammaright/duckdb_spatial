@@ -17,8 +17,8 @@ using namespace spatial::core;
 static void IntersectionFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto &ctx = lstate.ctx.GetCtx();
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t left, string_t right) {
+	BinaryExecutor::Execute<geometry_t, geometry_t, geometry_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](geometry_t left, geometry_t right) {
 		    auto left_geom = lstate.ctx.Deserialize(left);
 		    auto right_geom = lstate.ctx.Deserialize(right);
 
@@ -27,6 +27,21 @@ static void IntersectionFunction(DataChunk &args, ExpressionState &state, Vector
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the "intersection" of geom1 and geom2
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "relation"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStIntersection(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_Intersection");
@@ -35,6 +50,7 @@ void GEOSScalarFunctions::RegisterStIntersection(DatabaseInstance &db) {
 	                               IntersectionFunction, nullptr, nullptr, nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Intersection", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

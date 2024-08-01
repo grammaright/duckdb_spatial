@@ -6,9 +6,9 @@
 #include "spatial/common.hpp"
 #include "spatial/core/functions/scalar.hpp"
 #include "spatial/core/functions/common.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/types.hpp"
 #include "spatial/core/geometry/wkb_writer.hpp"
+#include "spatial/core/geometry/wkb_reader.hpp"
 
 namespace spatial {
 
@@ -24,8 +24,9 @@ void GeometryFromHEXWKB(DataChunk &args, ExpressionState &state, Vector &result)
 	auto count = args.size();
 
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	WKBReader reader(lstate.arena);
 
-	UnaryExecutor::Execute<string_t, string_t>(input, result, count, [&](string_t input_hex) {
+	UnaryExecutor::Execute<string_t, geometry_t>(input, result, count, [&](string_t input_hex) {
 		auto hex_size = input_hex.GetSize();
 		auto hex_ptr = const_data_ptr_cast(input_hex.GetData());
 
@@ -47,10 +48,33 @@ void GeometryFromHEXWKB(DataChunk &args, ExpressionState &state, Vector &result)
 			blob_ptr[blob_idx++] = (byte_a << 4) + byte_b;
 		}
 
-		auto geom = lstate.factory.FromWKB((const char *)wkb_blob.get(), blob_size);
-		return lstate.factory.Serialize(result, geom);
+		auto geom = reader.Deserialize(blob_ptr, blob_size);
+		return Geometry::Serialize(geom, result);
 	});
 }
+
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "conversion"}};
+
+// HexWKB
+static constexpr const char *DOC_DESCRIPTION = R"(
+Creates a GEOMETRY from a HEXWKB string
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+// HexEWKB
+static constexpr const char *EXTENDED_DOC_DESCRIPTION = R"(
+    Deserialize a GEOMETRY from a HEXEWKB encoded string
+)";
+
+static constexpr const char *EXTENDED_DOC_EXAMPLE = R"(
+
+)";
 
 //------------------------------------------------------------------------------
 //  Register functions
@@ -59,6 +83,7 @@ void CoreScalarFunctions::RegisterStGeomFromHEXWKB(DatabaseInstance &db) {
 	ScalarFunction hexwkb("ST_GeomFromHEXWKB", {LogicalType::VARCHAR}, GeoTypes::GEOMETRY(), GeometryFromHEXWKB,
 	                      nullptr, nullptr, nullptr, GeometryFunctionLocalState::Init);
 	ExtensionUtil::RegisterFunction(db, hexwkb);
+	DocUtil::AddDocumentation(db, "ST_GeomFromHEXWKB", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 
 	// Our WKB reader also parses EWKB, even though it will just ignore SRID's.
 	// so we'll just add an alias for now. In the future, once we actually handle
@@ -67,6 +92,7 @@ void CoreScalarFunctions::RegisterStGeomFromHEXWKB(DatabaseInstance &db) {
 	ScalarFunction ewkb("ST_GeomFromHEXEWKB", {LogicalType::VARCHAR}, GeoTypes::GEOMETRY(), GeometryFromHEXWKB, nullptr,
 	                    nullptr, nullptr, GeometryFunctionLocalState::Init);
 	ExtensionUtil::RegisterFunction(db, ewkb);
+	DocUtil::AddDocumentation(db, "ST_GeomFromHEXEWKB", EXTENDED_DOC_DESCRIPTION, EXTENDED_DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

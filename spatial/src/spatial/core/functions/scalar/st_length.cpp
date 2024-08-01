@@ -3,7 +3,6 @@
 #include "spatial/core/functions/scalar.hpp"
 #include "spatial/core/functions/common.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/types.hpp"
 
 namespace spatial {
@@ -50,32 +49,16 @@ static void LineLengthFunction(DataChunk &args, ExpressionState &state, Vector &
 static void GeometryLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, double>(input, result, count, [&](string_t input) {
-		auto geometry = lstate.factory.Deserialize(input);
-		switch (geometry.Type()) {
-		case GeometryType::LINESTRING:
-			return geometry.GetLineString().Length();
-		case GeometryType::MULTILINESTRING:
-			return geometry.GetMultiLineString().Length();
-		case GeometryType::GEOMETRYCOLLECTION:
-			return geometry.GetGeometryCollection().Aggregate(
-			    [](Geometry &geom, double state) {
-				    if (geom.Type() == GeometryType::LINESTRING) {
-					    return state + geom.GetLineString().Length();
-				    } else if (geom.Type() == GeometryType::MULTILINESTRING) {
-					    return state + geom.GetMultiLineString().Length();
-				    } else {
-					    return state;
-				    }
-			    },
-			    0.0);
-		default:
-			return 0.0;
-		}
+	UnaryExecutor::Execute<geometry_t, double>(input, result, count, [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(arena, input);
+		double length = 0.0;
+		Geometry::ExtractLines(geom, [&](const Geometry &line) { length += LineString::Length(line); });
+		return length;
 	});
 
 	if (count == 1) {
@@ -83,6 +66,18 @@ static void GeometryLengthFunction(DataChunk &args, ExpressionState &state, Vect
 	}
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the length of the input line geometry
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -96,6 +91,7 @@ void CoreScalarFunctions::RegisterStLength(DatabaseInstance &db) {
 	                                               nullptr, nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, length_function_set);
+	DocUtil::AddDocumentation(db, "ST_Length", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

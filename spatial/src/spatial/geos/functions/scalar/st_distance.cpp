@@ -20,11 +20,11 @@ static void ExecutePreparedDistance(GEOSFunctionLocalState &lstate, Vector &left
 
 	// Optimize: if one of the arguments is a constant, we can prepare it once and reuse it
 	if (left.GetVectorType() == VectorType::CONSTANT_VECTOR && right.GetVectorType() != VectorType::CONSTANT_VECTOR) {
-		auto &left_blob = FlatVector::GetData<string_t>(left)[0];
+		auto &left_blob = FlatVector::GetData<geometry_t>(left)[0];
 		auto left_geom = lstate.ctx.Deserialize(left_blob);
 		auto left_prepared = make_uniq_geos(ctx, GEOSPrepare_r(ctx, left_geom.get()));
 
-		UnaryExecutor::Execute<string_t, double>(right, result, count, [&](string_t &right_blob) {
+		UnaryExecutor::Execute<geometry_t, double>(right, result, count, [&](geometry_t &right_blob) {
 			auto right_geometry = lstate.ctx.Deserialize(right_blob);
 			double distance;
 			GEOSPreparedDistance_r(ctx, left_prepared.get(), right_geometry.get(), &distance);
@@ -32,19 +32,19 @@ static void ExecutePreparedDistance(GEOSFunctionLocalState &lstate, Vector &left
 		});
 	} else if (right.GetVectorType() == VectorType::CONSTANT_VECTOR &&
 	           left.GetVectorType() != VectorType::CONSTANT_VECTOR) {
-		auto &right_blob = FlatVector::GetData<string_t>(right)[0];
+		auto &right_blob = FlatVector::GetData<geometry_t>(right)[0];
 		auto right_geom = lstate.ctx.Deserialize(right_blob);
 		auto right_prepared = make_uniq_geos(ctx, GEOSPrepare_r(ctx, right_geom.get()));
 
-		UnaryExecutor::Execute<string_t, double>(left, result, count, [&](string_t &left_blob) {
+		UnaryExecutor::Execute<geometry_t, double>(left, result, count, [&](geometry_t &left_blob) {
 			auto left_geometry = lstate.ctx.Deserialize(left_blob);
 			double distance;
 			GEOSPreparedDistance_r(ctx, right_prepared.get(), left_geometry.get(), &distance);
 			return distance;
 		});
 	} else {
-		BinaryExecutor::Execute<string_t, string_t, double>(
-		    left, right, result, count, [&](string_t &left_blob, string_t &right_blob) {
+		BinaryExecutor::Execute<geometry_t, geometry_t, double>(
+		    left, right, result, count, [&](geometry_t &left_blob, geometry_t &right_blob) {
 			    auto left_geometry = lstate.ctx.Deserialize(left_blob);
 			    auto right_geometry = lstate.ctx.Deserialize(right_blob);
 			    double distance;
@@ -62,6 +62,24 @@ static void DistanceFunction(DataChunk &args, ExpressionState &state, Vector &re
 	ExecutePreparedDistance(lstate, left, right, count, result);
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the distance between two geometries.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+select st_distance('POINT(0 0)'::geometry, 'POINT(1 1)'::geometry);
+----
+1.4142135623731
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
+
+//------------------------------------------------------------------------------
+// Register functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStDistance(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_Distance");
@@ -70,6 +88,7 @@ void GEOSScalarFunctions::RegisterStDistance(DatabaseInstance &db) {
 	                               nullptr, nullptr, nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::AddFunctionOverload(db, set);
+	DocUtil::AddDocumentation(db, "ST_Distance", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

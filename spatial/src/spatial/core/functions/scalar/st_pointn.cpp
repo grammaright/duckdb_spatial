@@ -67,34 +67,43 @@ static void LineStringPointNFunction(DataChunk &args, ExpressionState &state, Ve
 //------------------------------------------------------------------------------
 static void GeometryPointNFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 	auto &geom_vec = args.data[0];
 	auto &index_vec = args.data[1];
 
 	auto count = args.size();
 
-	BinaryExecutor::ExecuteWithNulls<string_t, int32_t, string_t>(
-	    geom_vec, index_vec, result, count, [&](string_t input, int32_t index, ValidityMask &mask, idx_t row_idx) {
-		    auto header = GeometryHeader::Get(input);
-		    if (header.type != GeometryType::LINESTRING) {
+	BinaryExecutor::ExecuteWithNulls<geometry_t, int32_t, geometry_t>(
+	    geom_vec, index_vec, result, count, [&](geometry_t input, int32_t index, ValidityMask &mask, idx_t row_idx) {
+		    if (input.GetType() != GeometryType::LINESTRING) {
 			    mask.SetInvalid(row_idx);
-			    return string_t();
+			    return geometry_t {};
 		    }
-
-		    auto line = lstate.factory.Deserialize(input).GetLineString();
-		    auto point_count = line.Count();
+		    auto line = Geometry::Deserialize(arena, input);
+		    auto point_count = LineString::VertexCount(line);
 
 		    if (point_count == 0 || index == 0 || index < -static_cast<int64_t>(point_count) ||
 		        index > static_cast<int64_t>(point_count)) {
 			    mask.SetInvalid(row_idx);
-			    return string_t();
+			    return geometry_t {};
 		    }
 
 		    auto actual_index = index < 0 ? point_count + index : index - 1;
-		    auto point = line.Vertices().Get(actual_index);
-		    return lstate.factory.Serialize(result, Geometry(lstate.factory.CreatePoint(point.x, point.y)));
+		    auto point = LineString::GetPointAsReference(line, actual_index);
+		    return Geometry::Serialize(point, result);
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the n'th vertex from the input geometry as a point geometry
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -110,6 +119,7 @@ void CoreScalarFunctions::RegisterStPointN(DatabaseInstance &db) {
 	                               LineStringPointNFunction));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_PointN", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

@@ -3,7 +3,7 @@
 #include "spatial/core/functions/scalar.hpp"
 #include "spatial/core/functions/common.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
+#include "spatial/core/geometry/wkb_reader.hpp"
 #include "spatial/core/types.hpp"
 
 namespace spatial {
@@ -268,14 +268,30 @@ static void Polygon2DFromWKBFunction(DataChunk &args, ExpressionState &state, Ve
 //------------------------------------------------------------------------------
 static void GeometryFromWKBFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, string_t>(input, result, count, [&](string_t input) {
-		auto geometry = lstate.factory.FromWKB(input.GetDataUnsafe(), input.GetSize());
-		return lstate.factory.Serialize(result, geometry);
+	WKBReader reader(arena);
+	UnaryExecutor::Execute<string_t, geometry_t>(input, result, count, [&](string_t input) {
+		auto geom = reader.Deserialize(input);
+		return Geometry::Serialize(geom, result);
 	});
 }
+
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Deserializes a GEOMETRY from a WKB encoded blob
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr const DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "conversion"}};
 
 //------------------------------------------------------------------------------
 // Register functions
@@ -301,6 +317,7 @@ void CoreScalarFunctions::RegisterStGeomFromWKB(DatabaseInstance &db) {
 	                                            nullptr, nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, st_geom_from_wkb);
+	DocUtil::AddDocumentation(db, "ST_GeomFromWKB", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

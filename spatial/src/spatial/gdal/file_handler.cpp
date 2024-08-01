@@ -3,6 +3,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/main/client_data.hpp"
 
 #include "cpl_vsi.h"
 #include "cpl_vsi_virtual.h"
@@ -20,15 +21,21 @@ namespace gdal {
 class DuckDBFileHandle : public VSIVirtualHandle {
 private:
 	unique_ptr<FileHandle> file_handle;
+
 public:
-	explicit DuckDBFileHandle(unique_ptr<FileHandle> file_handle_p)
-	    : file_handle(std::move(file_handle_p))
-	{ }
+	explicit DuckDBFileHandle(unique_ptr<FileHandle> file_handle_p) : file_handle(std::move(file_handle_p)) {
+	}
 
 	vsi_l_offset Tell() override {
 		return static_cast<vsi_l_offset>(file_handle->SeekPosition());
 	}
 	int Seek(vsi_l_offset nOffset, int nWhence) override {
+		if (nWhence == SEEK_SET && nOffset == 0) {
+			// Use the reset function instead to allow compressed file handles to rewind
+			// even if they don't support seeking
+			file_handle->Reset();
+			return 0;
+		}
 		switch (nWhence) {
 		case SEEK_SET:
 			file_handle->Seek(nOffset);
@@ -47,14 +54,17 @@ public:
 
 	size_t Read(void *pBuffer, size_t nSize, size_t nCount) override {
 		auto remaining_bytes = nSize * nCount;
-		while(remaining_bytes > 0) {
-			auto read_bytes = file_handle->Read(pBuffer, remaining_bytes);
-			if(read_bytes == 0) {
-				break;
+		try {
+			while (remaining_bytes > 0) {
+				auto read_bytes = file_handle->Read(pBuffer, remaining_bytes);
+				if (read_bytes == 0) {
+					break;
+				}
+				remaining_bytes -= read_bytes;
+				// Note we performed a cast back to void*
+				pBuffer = static_cast<uint8_t *>(pBuffer) + read_bytes;
 			}
-			remaining_bytes -= read_bytes;
-			// Note we performed a cast back to void*
-			pBuffer = static_cast<uint8_t*>(pBuffer) + read_bytes;
+		} catch (...) {
 		}
 		return nCount - (remaining_bytes / nSize);
 	}
@@ -63,9 +73,12 @@ public:
 		return file_handle->SeekPosition() == file_handle->GetFileSize() ? TRUE : FALSE;
 	}
 
-
 	size_t Write(const void *pBuffer, size_t nSize, size_t nCount) override {
-		auto written_bytes = file_handle->Write(const_cast<void *>(pBuffer), nSize * nCount);
+		size_t written_bytes = 0;
+		try {
+			written_bytes = file_handle->Write(const_cast<void *>(pBuffer), nSize * nCount);
+		} catch (...) {
+		}
 		// Return the number of items written
 		return static_cast<size_t>(written_bytes / nSize);
 	}
@@ -88,30 +101,35 @@ public:
 	// VSIRangeStatus GetRangeStatus(vsi_l_offset nOffset, vsi_l_offset nLength) override;
 };
 
-
 //--------------------------------------------------------------------------
 // GDAL DuckDB File system wrapper
 //--------------------------------------------------------------------------
+static bool IsStdCharDev(const char *file_name) {
+	return !strcmp(file_name, "/dev/stdin") || !strcmp(file_name, "/dev/stdout") || !strcmp(file_name, "/dev/stderr") ||
+	       !strcmp(file_name, "/dev/null") || !strcmp(file_name, "/dev/zero");
+}
+
 class DuckDBFileSystemHandler : public VSIFilesystemHandler {
 private:
 	string client_prefix;
-	ClientContext& context;
-public:
-	DuckDBFileSystemHandler(string client_prefix, ClientContext& context)
-	    : client_prefix(std::move(client_prefix)), context(context) { };
+	ClientContext &context;
 
-	const char* StripPrefix(const char *pszFilename)
-	{
+public:
+	DuckDBFileSystemHandler(string client_prefix, ClientContext &context)
+	    : client_prefix(std::move(client_prefix)), context(context) {};
+
+	const char *StripPrefix(const char *pszFilename) {
 		return pszFilename + client_prefix.size();
 	}
 
-	VSIVirtualHandle *Open(const char *prefixed_file_name, const char *access,
-	                       bool bSetError, CSLConstList /* papszOptions */) override {
+	VSIVirtualHandle *Open(const char *prefixed_file_name, const char *access, bool bSetError,
+	                       CSLConstList /* papszOptions */) override {
 		auto file_name = StripPrefix(prefixed_file_name);
+		auto file_name_str = string(file_name);
 		auto &fs = FileSystem::GetFileSystem(context);
 
 		// TODO: Double check that this is correct
-		uint8_t flags;
+		FileOpenFlags flags;
 		auto len = strlen(access);
 		if (access[0] == 'r') {
 			flags = FileFlags::FILE_FLAGS_READ;
@@ -123,7 +141,10 @@ public:
 				flags |= FileFlags::FILE_FLAGS_WRITE;
 			}
 		} else if (access[0] == 'w') {
-			flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW;
+			flags = FileFlags::FILE_FLAGS_WRITE;
+			if (!IsStdCharDev(file_name)) {
+				flags |= FileFlags::FILE_FLAGS_FILE_CREATE_NEW;
+			}
 			if (len > 1 && access[1] == '+') {
 				flags |= FileFlags::FILE_FLAGS_READ;
 			}
@@ -145,14 +166,48 @@ public:
 		}
 
 		try {
-			string path(file_name);
-			auto file = fs.OpenFile(file_name, flags);
-			return new DuckDBFileHandle(std::move(file));
-		} catch (std::exception &ex) {
-			if(bSetError) {
-				VSIError(VSIE_FileError, "Failed to open file %s: %s", file_name, ex.what());
+			// Check if the file is a directory
+
+#ifdef _WIN32
+			if (!FileSystem::IsRemoteFile(file_name) && fs.DirectoryExists(file_name_str) && (flags.OpenForReading())) {
+				// We can't open a directory for reading on windows without special flags
+				// so just open nul instead, gdal will reject it when it tries to read
+				auto file = fs.OpenFile("nul", flags);
+				return new DuckDBFileHandle(std::move(file));
 			}
-			return nullptr;
+#endif
+
+			// If the file is remote and NOT in write mode, we can cache it.
+			if (FileSystem::IsRemoteFile(file_name_str) && !flags.OpenForWriting() && !flags.OpenForAppending()) {
+
+				// Pass the direct IO flag to the file system since we use GDAL's caching instead
+				flags |= FileFlags::FILE_FLAGS_DIRECT_IO;
+
+				auto file = fs.OpenFile(file_name, flags | FileCompressionType::AUTO_DETECT);
+				return VSICreateCachedFile(new DuckDBFileHandle(std::move(file)));
+			} else {
+				auto file = fs.OpenFile(file_name, flags | FileCompressionType::AUTO_DETECT);
+				return new DuckDBFileHandle(std::move(file));
+			}
+		} catch (std::exception &ex) {
+			// Failed to open file via DuckDB File System. If this doesnt have a VSI prefix we can return an error here.
+			if (strncmp(file_name, "/vsi", 4) != 0 && !IsStdCharDev(file_name)) {
+				if (bSetError) {
+					VSIError(VSIE_FileError, "Failed to open file %s: %s", file_name, ex.what());
+				}
+				return nullptr;
+			}
+
+			// Fall back to GDAL instead
+			auto handler = VSIFileManager::GetHandler(file_name);
+			if (handler) {
+				return handler->Open(file_name, access);
+			} else {
+				if (bSetError) {
+					VSIError(VSIE_FileError, "Failed to open file %s: %s", file_name, ex.what());
+				}
+				return nullptr;
+			}
 		}
 	}
 
@@ -162,14 +217,30 @@ public:
 
 		memset(pstatbuf, 0, sizeof(VSIStatBufL));
 
-		unique_ptr<FileHandle> file;
-		try {
-			file = fs.OpenFile(file_name, FileFlags::FILE_FLAGS_READ);
-		} catch (std::exception &ex) {
+		if (IsStdCharDev(file_name)) {
+			pstatbuf->st_mode = S_IFCHR;
+			return 0;
+		}
+
+		if (!(fs.FileExists(file_name) || (!FileSystem::IsRemoteFile(file_name) && fs.DirectoryExists(file_name)))) {
 			return -1;
 		}
 
-		if(!file) {
+#ifdef _WIN32
+		if (!FileSystem::IsRemoteFile(file_name) && fs.DirectoryExists(file_name)) {
+			pstatbuf->st_mode = S_IFDIR;
+			return 0;
+		}
+#endif
+
+		unique_ptr<FileHandle> file;
+		try {
+			file = fs.OpenFile(file_name, FileFlags::FILE_FLAGS_READ | FileCompressionType::AUTO_DETECT |
+			                                  FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+		} catch (std::exception &ex) {
+			return -1;
+		}
+		if (!file) {
 			return -1;
 		}
 
@@ -189,15 +260,20 @@ public:
 			pstatbuf->st_mode = S_IFCHR;
 			break;
 		default:
-			if(FileSystem::IsRemoteFile(file_name)) {
+			// HTTPFS returns invalid type for everything basically.
+			if (FileSystem::IsRemoteFile(file_name)) {
 				pstatbuf->st_mode = S_IFREG;
-			}
-			else {
-				throw IOException("Unknown file type");
+			} else {
+				return -1;
 			}
 		}
 
 		return 0;
+	}
+
+	bool IsLocal(const char *prefixed_file_name) override {
+		auto file_name = StripPrefix(prefixed_file_name);
+		return !FileSystem::IsRemoteFile(file_name);
 	}
 
 	int Mkdir(const char *prefixed_dir_name, long mode) override {
@@ -268,7 +344,6 @@ public:
 	}
 };
 
-
 //--------------------------------------------------------------------------
 // GDALClientContextState
 //--------------------------------------------------------------------------
@@ -277,7 +352,7 @@ public:
 // use their own attached file systems. This is necessary because GDAL is
 // not otherwise aware of the connection context.
 //
-GDALClientContextState::GDALClientContextState(ClientContext& context) {
+GDALClientContextState::GDALClientContextState(ClientContext &context) {
 
 	// Create a new random prefix for this client
 	client_prefix = StringUtil::Format("/vsiduckdb-%s/", UUID::ToString(UUID::GenerateRandomUUID()));
@@ -297,19 +372,23 @@ GDALClientContextState::~GDALClientContextState() {
 	delete fs_handler;
 }
 
-void GDALClientContextState::QueryEnd(){
+void GDALClientContextState::QueryEnd() {
 
 };
 
-const string& GDALClientContextState::GetPrefix() const {
-	return client_prefix;
+string GDALClientContextState::GetPrefix(const string &value) const {
+	// If the user explicitly asked for a VSI prefix, we don't add our own
+	if (StringUtil::StartsWith(value, "/vsi")) {
+		return value;
+	}
+	return client_prefix + value;
 }
 
-GDALClientContextState& GDALClientContextState::GetOrCreate(ClientContext& context) {
-	if(!context.registered_state["gdal"]) {
+GDALClientContextState &GDALClientContextState::GetOrCreate(ClientContext &context) {
+	if (!context.registered_state["gdal"]) {
 		context.registered_state["gdal"] = make_uniq<GDALClientContextState>(context);
 	}
-	return *dynamic_cast<GDALClientContextState*>(context.registered_state["gdal"].get());
+	return *dynamic_cast<GDALClientContextState *>(context.registered_state["gdal"].get());
 }
 
 } // namespace gdal

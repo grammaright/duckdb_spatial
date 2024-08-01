@@ -30,22 +30,34 @@ static void PolygonInteriorRingsFunction(DataChunk &args, ExpressionState &state
 //------------------------------------------------------------------------------
 static void GeometryInteriorRingsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 	auto &input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::ExecuteWithNulls<string_t, uint32_t>(
-	    input, result, count, [&](string_t input, ValidityMask &validity, idx_t idx) {
-		    auto header = GeometryHeader::Get(input);
-		    if (header.type != GeometryType::POLYGON) {
+	UnaryExecutor::ExecuteWithNulls<geometry_t, uint32_t>(
+	    input, result, count, [&](geometry_t input, ValidityMask &validity, idx_t idx) {
+		    if (input.GetType() != GeometryType::POLYGON) {
 			    validity.SetInvalid(idx);
 			    return 0;
 		    }
-		    auto polygon = lstate.factory.Deserialize(input);
-		    auto rings = polygon.GetPolygon().Count();
+		    auto polygon = Geometry::Deserialize(arena, input);
+		    auto rings = Polygon::PartCount(polygon);
 		    return rings == 0 ? 0 : static_cast<int32_t>(rings - 1); // -1 for the exterior ring
 	    });
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the number if interior rings of a polygon
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -59,6 +71,7 @@ void CoreScalarFunctions::RegisterStNInteriorRings(DatabaseInstance &db) {
 		                               nullptr, nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 		ExtensionUtil::RegisterFunction(db, set);
+		DocUtil::AddDocumentation(db, alias, DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 	}
 }
 

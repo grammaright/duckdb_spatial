@@ -17,17 +17,29 @@ using namespace spatial::core;
 static void NormalizeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto &ctx = lstate.ctx.GetCtx();
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t input) {
+	UnaryExecutor::Execute<geometry_t, geometry_t>(args.data[0], result, args.size(), [&](geometry_t input) {
 		auto geom = lstate.ctx.Deserialize(input);
 		auto res = GEOSNormalize_r(ctx, geom.get());
 		if (res == -1) {
-			throw Exception("Could not normalize geometry");
-			;
+			throw InvalidInputException("Could not normalize geometry");
 		}
 		return lstate.ctx.Serialize(result, geom);
 	});
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns a "normalized" version of the input geometry.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStNormalize(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_Normalize");
@@ -36,6 +48,7 @@ void GEOSScalarFunctions::RegisterStNormalize(DatabaseInstance &db) {
 	                               nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Normalize", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

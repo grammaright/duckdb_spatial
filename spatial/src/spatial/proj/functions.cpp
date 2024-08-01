@@ -7,7 +7,7 @@
 
 #include "spatial/common.hpp"
 #include "spatial/core/types.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
+#include "spatial/core/geometry/geometry.hpp"
 #include "spatial/proj/functions.hpp"
 #include "spatial/proj/module.hpp"
 
@@ -17,13 +17,15 @@ namespace spatial {
 
 namespace proj {
 
+using namespace core;
+
 struct ProjFunctionLocalState : public FunctionLocalState {
 
 	PJ_CONTEXT *proj_ctx;
-	core::GeometryFactory factory;
+	ArenaAllocator arena;
 
-	ProjFunctionLocalState(ClientContext &context)
-	    : proj_ctx(ProjModule::GetThreadProjContext()), factory(BufferAllocator::Get(context)) {
+	explicit ProjFunctionLocalState(ClientContext &context)
+	    : proj_ctx(ProjModule::GetThreadProjContext()), arena(BufferAllocator::Get(context)) {
 	}
 
 	~ProjFunctionLocalState() override {
@@ -38,7 +40,7 @@ struct ProjFunctionLocalState : public FunctionLocalState {
 
 	static ProjFunctionLocalState &ResetAndGet(ExpressionState &state) {
 		auto &local_state = (ProjFunctionLocalState &)*ExecuteFunctionState::GetFunctionState(state);
-		local_state.factory.allocator.Reset();
+		local_state.arena.Reset();
 		return local_state;
 	}
 };
@@ -230,90 +232,22 @@ static void Point2DTransformFunction(DataChunk &args, ExpressionState &state, Ve
 	}
 }
 
-static void TransformGeometry(PJ *crs, core::Point &point) {
-	if (point.IsEmpty()) {
-		return;
-	}
-	auto vertex = point.GetVertex();
-	auto transformed = proj_trans(crs, PJ_FWD, proj_coord(vertex.x, vertex.y, 0, 0)).xy;
-	point.Vertices().Set(0, core::Vertex(transformed.x, transformed.y));
-}
-
-static void TransformGeometry(PJ *crs, core::LineString &line) {
-
-	for (uint32_t i = 0; i < line.Vertices().Count(); i++) {
-		auto vert = line.Vertices().Get(i);
-		auto transformed = proj_trans(crs, PJ_FWD, proj_coord(vert.x, vert.y, 0, 0)).xy;
-
-		core::Vertex new_vert(transformed.x, transformed.y);
-		line.Vertices().Set(i, new_vert);
-	}
-}
-
-static void TransformGeometry(PJ *crs, core::Polygon &poly) {
-	for (auto &ring : poly.Rings()) {
-		for (uint32_t i = 0; i < ring.Count(); i++) {
-			auto vert = ring.Get(i);
-			auto transformed = proj_trans(crs, PJ_FWD, proj_coord(vert.x, vert.y, 0, 0)).xy;
-			core::Vertex new_vert(transformed.x, transformed.y);
-			ring.Set(i, new_vert);
+struct TransformOp {
+	static void Case(Geometry::Tags::SinglePartGeometry, Geometry &geom, PJ *crs, ArenaAllocator &arena) {
+		SinglePartGeometry::MakeMutable(geom, arena);
+		for (uint32_t i = 0; i < geom.Count(); i++) {
+			auto vertex = SinglePartGeometry::GetVertex(geom, i);
+			auto transformed = proj_trans(crs, PJ_FWD, proj_coord(vertex.x, vertex.y, 0, 0)).xy;
+			// we own the array, so we can use SetUnsafe
+			SinglePartGeometry::SetVertex(geom, i, {transformed.x, transformed.y});
 		}
 	}
-}
-
-static void TransformGeometry(PJ *crs, core::MultiPoint &multi_point) {
-	for (auto &point : multi_point) {
-		TransformGeometry(crs, point);
+	static void Case(Geometry::Tags::MultiPartGeometry, Geometry &geom, PJ *crs, ArenaAllocator &arena) {
+		for (auto &part : MultiPartGeometry::Parts(geom)) {
+			Geometry::Match<TransformOp>(part, crs, arena);
+		}
 	}
-}
-
-static void TransformGeometry(PJ *crs, core::MultiLineString &multi_line) {
-	for (auto &line : multi_line) {
-		TransformGeometry(crs, line);
-	}
-}
-
-static void TransformGeometry(PJ *crs, core::MultiPolygon &multi_poly) {
-	for (auto &poly : multi_poly) {
-		TransformGeometry(crs, poly);
-	}
-}
-
-static void TransformGeometry(PJ *crs, core::Geometry &geom);
-
-static void TransformGeometry(PJ *crs, core::GeometryCollection &geom) {
-	for (auto &child : geom) {
-		TransformGeometry(crs, child);
-	}
-}
-
-static void TransformGeometry(PJ *crs, core::Geometry &geom) {
-	switch (geom.Type()) {
-	case core::GeometryType::POINT:
-		TransformGeometry(crs, geom.GetPoint());
-		break;
-	case core::GeometryType::LINESTRING:
-		TransformGeometry(crs, geom.GetLineString());
-		break;
-	case core::GeometryType::POLYGON:
-		TransformGeometry(crs, geom.GetPolygon());
-		break;
-	case core::GeometryType::MULTIPOINT:
-		TransformGeometry(crs, geom.GetMultiPoint());
-		break;
-	case core::GeometryType::MULTILINESTRING:
-		TransformGeometry(crs, geom.GetMultiLineString());
-		break;
-	case core::GeometryType::MULTIPOLYGON:
-		TransformGeometry(crs, geom.GetMultiPolygon());
-		break;
-	case core::GeometryType::GEOMETRYCOLLECTION:
-		TransformGeometry(crs, geom.GetGeometryCollection());
-		break;
-	default:
-		throw NotImplementedException("Unimplemented geometry type!");
-	}
-}
+};
 
 struct ProjCRSDelete {
 	void operator()(PJ *crs) {
@@ -335,7 +269,7 @@ static void GeometryTransformFunction(DataChunk &args, ExpressionState &state, V
 	auto &info = func_expr.bind_info->Cast<TransformFunctionData>();
 
 	auto &proj_ctx = local_state.proj_ctx;
-	auto &factory = local_state.factory;
+	auto &arena = local_state.arena;
 
 	if (proj_from_vec.GetVectorType() == VectorType::CONSTANT_VECTOR &&
 	    proj_to_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(proj_from_vec) &&
@@ -360,18 +294,17 @@ static void GeometryTransformFunction(DataChunk &args, ExpressionState &state, V
 			// otherwise fall back to the original CRS
 		}
 
-		UnaryExecutor::Execute<string_t, string_t>(geom_vec, result, count, [&](string_t input_geom) {
-			auto geom = factory.Deserialize(input_geom);
-			auto copy = factory.CopyGeometry(geom);
-			TransformGeometry(crs.get(), copy);
-			return factory.Serialize(result, copy);
+		UnaryExecutor::Execute<geometry_t, geometry_t>(geom_vec, result, count, [&](geometry_t input_geom) {
+			auto geom = Geometry::Deserialize(arena, input_geom);
+			Geometry::Match<TransformOp>(geom, crs.get(), arena);
+			return Geometry::Serialize(geom, result);
 		});
 	} else {
 		// General case: projections are not constant
 		// we need to create a projection for each geometry
-		TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+		TernaryExecutor::Execute<geometry_t, string_t, string_t, geometry_t>(
 		    geom_vec, proj_from_vec, proj_to_vec, result, count,
-		    [&](string_t input_geom, string_t proj_from, string_t proj_to) {
+		    [&](geometry_t input_geom, string_t proj_from, string_t proj_to) {
 			    auto from_str = proj_from.GetString();
 			    auto to_str = proj_to.GetString();
 			    auto crs = ProjCRS(proj_create_crs_to_crs(proj_ctx, from_str.c_str(), to_str.c_str(), nullptr));
@@ -388,10 +321,9 @@ static void GeometryTransformFunction(DataChunk &args, ExpressionState &state, V
 				    // otherwise fall back to the original CRS
 			    }
 
-			    auto geom = factory.Deserialize(input_geom);
-			    auto copy = factory.CopyGeometry(geom);
-			    TransformGeometry(crs.get(), copy);
-			    return factory.Serialize(result, copy);
+			    auto geom = Geometry::Deserialize(arena, input_geom);
+			    Geometry::Match<TransformOp>(geom, crs.get(), arena);
+			    return Geometry::Serialize(geom, result);
 		    });
 	}
 }
@@ -496,6 +428,61 @@ void GenerateSpatialRefSysTable::Register(DatabaseInstance &db) {
 	*/
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+Transforms a geometry between two coordinate systems
+
+The source and target coordinate systems can be specified using any format that the [PROJ library](https://proj.org) supports.
+
+The optional `always_xy` parameter can be used to force the input and output geometries to be interpreted as having a [northing, easting] coordinate axis order regardless of what the source and target coordinate system definition says. This is particularly useful when transforming to/from the [WGS84/EPSG:4326](https://en.wikipedia.org/wiki/World_Geodetic_System) coordinate system (what most people think of when they hear "longitude"/"latitude" or "GPS coordinates"), which is defined as having a [latitude, longitude] axis order even though [longitude, latitude] is commonly used in practice (e.g. in [GeoJSON](https://tools.ietf.org/html/rfc7946)). More details available in the [PROJ documentation](https://proj.org/en/9.3/faq.html#why-is-the-axis-ordering-in-proj-not-consistent).
+
+DuckDB spatial vendors its own static copy of the PROJ database of coordinate systems, so if you have your own installation of PROJ on your system the available coordinate systems may differ to what's available in other GIS software.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+-- Transform a geometry from EPSG:4326 to EPSG:3857 (WGS84 to WebMercator)
+-- Note that since WGS84 is defined as having a [latitude, longitude] axis order
+-- we follow the standard and provide the input geometry using that axis order,
+-- but the output will be [northing, easting] because that is what's defined by
+-- WebMercator.
+
+SELECT ST_AsText(
+    ST_Transform(
+        st_point(52.373123, 4.892360),
+        'EPSG:4326',
+        'EPSG:3857'
+    )
+);
+----
+POINT (544615.0239773799 6867874.103539125)
+
+-- Alternatively, let's say we got our input point from e.g. a GeoJSON file,
+-- which uses WGS84 but with [longitude, latitude] axis order. We can use the
+-- `always_xy` parameter to force the input geometry to be interpreted as having
+-- a [northing, easting] axis order instead, even though the source coordinate
+-- system definition says otherwise.
+
+SELECT ST_AsText(
+    ST_Transform(
+        -- note the axis order is reversed here
+        st_point(4.892360, 52.373123),
+        'EPSG:4326',
+        'EPSG:3857',
+        always_xy := true
+    )
+);
+----
+POINT (544615.0239773799 6867874.103539125)
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "conversion"}};
+
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void ProjFunctions::Register(DatabaseInstance &db) {
 	ScalarFunctionSet set("ST_Transform");
 
@@ -523,6 +510,7 @@ void ProjFunctions::Register(DatabaseInstance &db) {
 	    GeometryTransformFunction, TransformBind, nullptr, nullptr, ProjFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Transform", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 
 	GenerateSpatialRefSysTable::Register(db);
 }

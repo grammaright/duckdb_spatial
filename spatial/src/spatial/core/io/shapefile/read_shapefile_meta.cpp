@@ -10,7 +10,6 @@
 #include "spatial/core/io/shapefile.hpp"
 #include "spatial/core/functions/table.hpp"
 #include "spatial/core/types.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 
 #include "shapefil.h"
 #include "utf8proc_wrapper.hpp"
@@ -25,32 +24,35 @@ struct ShapeFileMetaBindData : public TableFunctionData {
 
 struct ShapeTypeEntry {
 	int shp_type;
-	const char* shp_name;
+	const char *shp_name;
 };
 
 static ShapeTypeEntry shape_type_map[] = {
-    { SHPT_NULL, "NULL" },
-    { SHPT_POINT, "POINT" },
-    { SHPT_ARC, "LINESTRING" },
-    { SHPT_POLYGON, "POLYGON" },
-    { SHPT_MULTIPOINT, "MULTIPOINT" },
-    { SHPT_POINTZ, "POINTZ" },
-    { SHPT_ARCZ, "LINESTRINGZ" },
-    { SHPT_POLYGONZ, "POLYGONZ" },
-    { SHPT_MULTIPOINTZ, "MULTIPOINTZ" },
-    { SHPT_POINTM, "POINTM" },
-    { SHPT_ARCM, "LINESTRINGM" },
-    { SHPT_POLYGONM, "POLYGONM" },
-    { SHPT_MULTIPOINTM, "MULTIPOINTM" },
-    { SHPT_MULTIPATCH, "MULTIPATCH" },
+    {SHPT_NULL, "NULL"},
+    {SHPT_POINT, "POINT"},
+    {SHPT_ARC, "LINESTRING"},
+    {SHPT_POLYGON, "POLYGON"},
+    {SHPT_MULTIPOINT, "MULTIPOINT"},
+    {SHPT_POINTZ, "POINTZ"},
+    {SHPT_ARCZ, "LINESTRINGZ"},
+    {SHPT_POLYGONZ, "POLYGONZ"},
+    {SHPT_MULTIPOINTZ, "MULTIPOINTZ"},
+    {SHPT_POINTM, "POINTM"},
+    {SHPT_ARCM, "LINESTRINGM"},
+    {SHPT_POLYGONM, "POLYGONM"},
+    {SHPT_MULTIPOINTM, "MULTIPOINTM"},
+    {SHPT_MULTIPATCH, "MULTIPATCH"},
 };
 
 static unique_ptr<FunctionData> ShapeFileMetaBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<ShapeFileMetaBindData>();
-	auto files = MultiFileReader::GetFileList(context, input.inputs[0], "ShapeFiles", FileGlobOptions::ALLOW_EMPTY);
-	for (auto &file : files) {
-		if(StringUtil::EndsWith(StringUtil::Lower(file), ".shp")) {
+
+	auto multi_file_reader = MultiFileReader::Create(input.table_function);
+	auto file_list = multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY);
+
+	for (auto &file : file_list->Files()) {
+		if (StringUtil::EndsWith(StringUtil::Lower(file), ".shp")) {
 			result->files.push_back(file);
 		}
 	}
@@ -83,7 +85,8 @@ struct ShapeFileMetaGlobalState : public GlobalTableFunctionState {
 	vector<string> files;
 };
 
-static unique_ptr<GlobalTableFunctionState> ShapeFileMetaInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+static unique_ptr<GlobalTableFunctionState> ShapeFileMetaInitGlobal(ClientContext &context,
+                                                                    TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<ShapeFileMetaBindData>();
 	auto result = make_uniq<ShapeFileMetaGlobalState>();
 
@@ -126,8 +129,9 @@ static void ShapeFileMetaExecute(ClientContext &context, TableFunctionInput &inp
 		SHPGetInfo(shp_handle.get(), &record_count, &shape_type, min_bound, max_bound);
 		file_name_data[out_idx] = StringVector::AddString(file_name_vector, file_name);
 		shape_type_data[out_idx] = 0;
-		for(auto shape_type_idx = 0; shape_type_idx < sizeof(shape_type_map) / sizeof(ShapeTypeEntry); shape_type_idx++) {
-			if(shape_type_map[shape_type_idx].shp_type == shape_type) {
+		for (auto shape_type_idx = 0; shape_type_idx < sizeof(shape_type_map) / sizeof(ShapeTypeEntry);
+		     shape_type_idx++) {
+			if (shape_type_map[shape_type_idx].shp_type == shape_type) {
 				shape_type_data[out_idx] = shape_type_idx;
 				break;
 			}
@@ -161,13 +165,13 @@ static unique_ptr<NodeStatistics> ShapeFileMetaCardinality(ClientContext &contex
 
 void CoreTableFunctions::RegisterShapefileMetaTableFunction(DatabaseInstance &db) {
 
-	TableFunction meta_func("shapefile_meta", {LogicalType::VARCHAR}, ShapeFileMetaExecute, ShapeFileMetaBind, ShapeFileMetaInitGlobal);
+	TableFunction meta_func("shapefile_meta", {LogicalType::VARCHAR}, ShapeFileMetaExecute, ShapeFileMetaBind,
+	                        ShapeFileMetaInitGlobal);
 	meta_func.table_scan_progress = ShapeFileMetaProgress;
 	meta_func.cardinality = ShapeFileMetaCardinality;
 	ExtensionUtil::RegisterFunction(db, MultiFileReader::CreateFunctionSet(meta_func));
-
 }
 
-}
+} // namespace core
 
-}
+} // namespace spatial

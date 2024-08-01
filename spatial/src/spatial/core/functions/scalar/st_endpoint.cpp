@@ -64,26 +64,38 @@ static void GeometryEndPointFunction(DataChunk &args, ExpressionState &state, Ve
 	auto &geom_vec = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    geom_vec, result, count, [&](string_t input, ValidityMask &mask, idx_t row_idx) {
-		    auto header = GeometryHeader::Get(input);
-		    if (header.type != GeometryType::LINESTRING) {
+	UnaryExecutor::ExecuteWithNulls<geometry_t, geometry_t>(
+	    geom_vec, result, count, [&](geometry_t input, ValidityMask &mask, idx_t row_idx) {
+		    if (input.GetType() != GeometryType::LINESTRING) {
 			    mask.SetInvalid(row_idx);
-			    return string_t();
+			    return geometry_t {};
 		    }
 
-		    auto line = lstate.factory.Deserialize(input).GetLineString();
-		    auto point_count = line.Count();
+		    auto line = Geometry::Deserialize(lstate.arena, input);
+		    auto point_count = LineString::VertexCount(line);
 
 		    if (point_count == 0) {
 			    mask.SetInvalid(row_idx);
-			    return string_t();
+			    return geometry_t {};
 		    }
 
-		    auto point = line.Vertices().Get(point_count - 1);
-		    return lstate.factory.Serialize(result, Geometry(lstate.factory.CreatePoint(point.x, point.y)));
+		    auto point = LineString::GetPointAsReference(line, point_count - 1);
+		    return Geometry::Serialize(point, result);
 	    });
 }
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+Returns the end point of a line.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+select st_endpoint('LINESTRING(0 0, 1 1)'::geometry);
+-- POINT(1 1)
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
 
 //------------------------------------------------------------------------------
 // Register functions
@@ -97,6 +109,7 @@ void CoreScalarFunctions::RegisterStEndPoint(DatabaseInstance &db) {
 	set.AddFunction(ScalarFunction({GeoTypes::LINESTRING_2D()}, GeoTypes::POINT_2D(), LineStringEndPointFunction));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_EndPoint", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

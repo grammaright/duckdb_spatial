@@ -17,13 +17,30 @@ using namespace spatial::core;
 static void EnvelopeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
 	auto &ctx = lstate.ctx.GetCtx();
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    args.data[0], result, args.size(), [&](string_t &geometry_blob, ValidityMask &mask, idx_t i) {
+	UnaryExecutor::ExecuteWithNulls<geometry_t, geometry_t>(
+	    args.data[0], result, args.size(), [&](geometry_t &geometry_blob, ValidityMask &mask, idx_t i) {
 		    auto geometry = lstate.ctx.Deserialize(geometry_blob);
 		    auto envelope = make_uniq_geos(ctx, GEOSEnvelope_r(ctx, geometry.get()));
 		    return lstate.ctx.Serialize(result, envelope);
 	    });
 }
+
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the minimum bounding box for the input geometry as a polygon geometry.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 
 void GEOSScalarFunctions::RegisterStEnvelope(DatabaseInstance &db) {
 
@@ -33,6 +50,7 @@ void GEOSScalarFunctions::RegisterStEnvelope(DatabaseInstance &db) {
 	                               nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Envelope", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

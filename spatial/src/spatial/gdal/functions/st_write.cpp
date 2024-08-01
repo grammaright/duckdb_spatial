@@ -8,7 +8,8 @@
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "spatial/core/types.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
+#include "spatial/core/geometry/geometry_type.hpp"
+#include "spatial/core/geometry/wkb_writer.hpp"
 #include "spatial/gdal/functions.hpp"
 #include "spatial/gdal/file_handler.hpp"
 
@@ -25,9 +26,10 @@ struct BindData : public TableFunctionData {
 	vector<string> field_names;
 	string driver_name;
 	string layer_name;
-	vector<string> dataset_creation_options;
-	vector<string> layer_creation_options;
+	CPLStringList dataset_creation_options;
+	CPLStringList layer_creation_options;
 	string target_srs;
+	OGRwkbGeometryType geometry_type = wkbUnknown;
 
 	BindData(string file_path, vector<LogicalType> field_sql_types, vector<string> field_names)
 	    : file_path(std::move(file_path)), field_sql_types(std::move(field_sql_types)),
@@ -36,8 +38,8 @@ struct BindData : public TableFunctionData {
 };
 
 struct LocalState : public LocalFunctionData {
-	core::GeometryFactory factory;
-	explicit LocalState(ClientContext &context) : factory(BufferAllocator::Get(context)) {
+	ArenaAllocator arena;
+	explicit LocalState(ClientContext &context) : arena(BufferAllocator::Get(context)) {
 	}
 };
 
@@ -55,14 +57,14 @@ struct GlobalState : public GlobalFunctionData {
 //===--------------------------------------------------------------------===//
 // Bind
 //===--------------------------------------------------------------------===//
-static unique_ptr<FunctionData> Bind(ClientContext &context, const CopyInfo &info, const vector<string> &names,
+static unique_ptr<FunctionData> Bind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
                                      const vector<LogicalType> &sql_types) {
 
-	auto bind_data = make_uniq<BindData>(info.file_path, sql_types, names);
+	auto bind_data = make_uniq<BindData>(input.info.file_path, sql_types, names);
 
 	// check all the options in the copy info
 	// and set
-	for (auto &option : info.options) {
+	for (auto &option : input.info.options) {
 		if (StringUtil::Upper(option.first) == "DRIVER") {
 			auto set = option.second.front();
 			if (set.type().id() == LogicalTypeId::VARCHAR) {
@@ -83,7 +85,8 @@ static unique_ptr<FunctionData> Bind(ClientContext &context, const CopyInfo &inf
 				if (s.type().id() != LogicalTypeId::VARCHAR) {
 					throw BinderException("Layer creation options must be strings");
 				}
-				bind_data->layer_creation_options.push_back(s.GetValue<string>());
+				auto str = s.GetValue<string>();
+				bind_data->layer_creation_options.AddString(str.c_str());
 			}
 		} else if (StringUtil::Upper(option.first) == "DATASET_CREATION_OPTIONS") {
 			auto set = option.second;
@@ -91,10 +94,38 @@ static unique_ptr<FunctionData> Bind(ClientContext &context, const CopyInfo &inf
 				if (s.type().id() != LogicalTypeId::VARCHAR) {
 					throw BinderException("Dataset creation options must be strings");
 				}
-				bind_data->dataset_creation_options.push_back(s.GetValue<string>());
+				auto str = s.GetValue<string>();
+				bind_data->dataset_creation_options.AddString(str.c_str());
+			}
+		} else if (StringUtil::Upper(option.first) == "GEOMETRY_TYPE") {
+			auto &set = option.second.front();
+			if (set.type().id() == LogicalTypeId::VARCHAR) {
+				auto type = set.GetValue<string>();
+				if (StringUtil::CIEquals(type, "POINT")) {
+					bind_data->geometry_type = wkbPoint;
+				} else if (StringUtil::CIEquals(type, "LINESTRING")) {
+					bind_data->geometry_type = wkbLineString;
+				} else if (StringUtil::CIEquals(type, "POLYGON")) {
+					bind_data->geometry_type = wkbPolygon;
+				} else if (StringUtil::CIEquals(type, "MULTIPOINT")) {
+					bind_data->geometry_type = wkbMultiPoint;
+				} else if (StringUtil::CIEquals(type, "MULTILINESTRING")) {
+					bind_data->geometry_type = wkbMultiLineString;
+				} else if (StringUtil::CIEquals(type, "MULTIPOLYGON")) {
+					bind_data->geometry_type = wkbMultiPolygon;
+				} else if (StringUtil::CIEquals(type, "GEOMETRYCOLLECTION")) {
+					bind_data->geometry_type = wkbGeometryCollection;
+				} else {
+					throw BinderException(
+					    "Unknown geometry type '%s', expected one of 'POINT', 'LINESTRING', 'POLYGON', 'MULTIPOINT', "
+					    "'MULTILINESTRING', 'MULTIPOLYGON', 'GEOMETRYCOLLECTION'",
+					    type);
+				}
+			} else {
+				throw BinderException("Geometry type must be a string");
 			}
 		} else if (StringUtil::Upper(option.first) == "SRS") {
-			auto set = option.second.front();
+			auto &set = option.second.front();
 			if (set.type().id() == LogicalTypeId::VARCHAR) {
 				bind_data->target_srs = set.GetValue<string>();
 			} else {
@@ -114,6 +145,31 @@ static unique_ptr<FunctionData> Bind(ClientContext &context, const CopyInfo &inf
 		// Default to the base name of the file
 		auto &fs = FileSystem::GetFileSystem(context);
 		bind_data->layer_name = fs.ExtractBaseName(bind_data->file_path);
+	}
+
+	auto driver = GetGDALDriverManager()->GetDriverByName(bind_data->driver_name.c_str());
+	if (!driver) {
+		throw BinderException("Unknown driver '%s'", bind_data->driver_name);
+	}
+
+	// Try get the file extension from the driver
+	auto file_ext = driver->GetMetadataItem(GDAL_DMD_EXTENSION);
+	if (file_ext) {
+		input.file_extension = file_ext;
+	} else {
+		// Space separated list of file extensions
+		auto file_exts = driver->GetMetadataItem(GDAL_DMD_EXTENSIONS);
+		if (file_exts) {
+			auto exts = StringUtil::Split(file_exts, ' ');
+			if (!exts.empty()) {
+				input.file_extension = exts[0];
+			}
+		}
+	}
+
+	// Driver specific checks
+	if (bind_data->driver_name == "OpenFileGDB" && bind_data->geometry_type == wkbUnknown) {
+		throw BinderException("OpenFileGDB requires 'GEOMETRY_TYPE' parameter to be set when writing!");
 	}
 
 	return std::move(bind_data);
@@ -175,6 +231,10 @@ static unique_ptr<OGRFieldDefn> OGRFieldTypeFromLogicalType(const string &name, 
 	case LogicalTypeId::TIME:
 		return make_uniq<OGRFieldDefn>(name.c_str(), OFTTime);
 	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_TZ:
 		return make_uniq<OGRFieldDefn>(name.c_str(), OFTDateTime);
 	case LogicalTypeId::LIST: {
 		auto child_type = ListType::GetChildType(type);
@@ -217,30 +277,19 @@ static unique_ptr<OGRFieldDefn> OGRFieldTypeFromLogicalType(const string &name, 
 static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, FunctionData &bind_data,
                                                  const string &file_path) {
 
-	auto &gdal_data = (BindData &)bind_data;
+	auto &gdal_data = bind_data.Cast<BindData>();
 	GDALDriver *driver = GetGDALDriverManager()->GetDriverByName(gdal_data.driver_name.c_str());
 	if (!driver) {
 		throw IOException("Could not open driver");
 	}
 
 	// Create the dataset
-	auto data_creation_options = vector<char const *>();
-	char **dco = nullptr;
-	for (auto &option : gdal_data.dataset_creation_options) {
-		dco = CSLAddString(dco, option.c_str());
-	}
-
 	auto &client_ctx = GDALClientContextState::GetOrCreate(context);
-	auto prefixed_path = client_ctx.GetPrefix() + file_path;
-	auto dataset = GDALDatasetUniquePtr(driver->Create(prefixed_path.c_str(), 0, 0, 0, GDT_Unknown, dco));
+	auto prefixed_path = client_ctx.GetPrefix(file_path);
+	auto dataset = GDALDatasetUniquePtr(
+	    driver->Create(prefixed_path.c_str(), 0, 0, 0, GDT_Unknown, gdal_data.dataset_creation_options));
 	if (!dataset) {
 		throw IOException("Could not open dataset");
-	}
-	CSLDestroy(dco);
-
-	char **lco = nullptr;
-	for (auto &option : gdal_data.layer_creation_options) {
-		lco = CSLAddString(lco, option.c_str());
 	}
 
 	// Set the SRS if provided
@@ -252,11 +301,11 @@ static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, Functio
 	// so we have to pass nullptr if we want the default behavior.
 	OGRSpatialReference *srs_ptr = gdal_data.target_srs.empty() ? nullptr : &srs;
 
-	auto layer = dataset->CreateLayer(gdal_data.layer_name.c_str(), srs_ptr, wkbUnknown, lco);
+	auto layer = dataset->CreateLayer(gdal_data.layer_name.c_str(), srs_ptr, gdal_data.geometry_type,
+	                                  gdal_data.layer_creation_options);
 	if (!layer) {
 		throw IOException("Could not create layer");
 	}
-	CSLDestroy(lco);
 
 	// Create the layer field definitions
 	idx_t geometry_field_count = 0;
@@ -288,8 +337,7 @@ static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, Functio
 // Sink
 //===--------------------------------------------------------------------===//
 
-static OGRGeometryUniquePtr OGRGeometryFromValue(const LogicalType &type, const Value &value,
-                                                 core::GeometryFactory &factory) {
+static OGRGeometryUniquePtr OGRGeometryFromValue(const LogicalType &type, const Value &value, ArenaAllocator &arena) {
 	if (type == core::GeoTypes::WKB_BLOB()) {
 		auto str = value.GetValueUnsafe<string_t>();
 
@@ -304,11 +352,8 @@ static OGRGeometryUniquePtr OGRGeometryFromValue(const LogicalType &type, const 
 		return OGRGeometryUniquePtr(ptr);
 	} else if (type == core::GeoTypes::GEOMETRY()) {
 		auto blob = value.GetValueUnsafe<string_t>();
-		auto geom = factory.Deserialize(blob);
-
 		uint32_t size;
-		auto wkb = factory.ToWKB(geom, &size);
-
+		auto wkb = core::WKBWriter::Write(core::geometry_t(blob), &size, arena);
 		OGRGeometry *ptr;
 		auto ok = OGRGeometryFactory::createFromWkb(wkb, nullptr, &ptr, size, wkbVariantIso);
 		if (ok != OGRERR_NONE) {
@@ -366,8 +411,76 @@ static void SetOgrFieldFromValue(OGRFeature *feature, int field_idx, const Logic
 		auto day = Date::ExtractDay(date);
 		feature->SetField(field_idx, year, month, day, 0, 0, 0, 0);
 	} break;
+	case LogicalTypeId::TIME: {
+		auto time = value.GetValueUnsafe<dtime_t>();
+		auto hour = static_cast<int>(time.micros / Interval::MICROS_PER_HOUR);
+		auto minute = static_cast<int>((time.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE);
+		auto second = static_cast<float>(static_cast<double>(time.micros % Interval::MICROS_PER_MINUTE) /
+		                                 static_cast<double>(Interval::MICROS_PER_SEC));
+		feature->SetField(field_idx, 0, 0, 0, hour, minute, second, 0);
+	} break;
+	case LogicalTypeId::TIMESTAMP: {
+		auto timestamp = value.GetValueUnsafe<timestamp_t>();
+		auto date = Timestamp::GetDate(timestamp);
+		auto time = Timestamp::GetTime(timestamp);
+		auto year = Date::ExtractYear(date);
+		auto month = Date::ExtractMonth(date);
+		auto day = Date::ExtractDay(date);
+		auto hour = static_cast<int>((time.micros % Interval::MICROS_PER_DAY) / Interval::MICROS_PER_HOUR);
+		auto minute = static_cast<int>((time.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE);
+		auto second = static_cast<float>(static_cast<double>(time.micros % Interval::MICROS_PER_MINUTE) /
+		                                 static_cast<double>(Interval::MICROS_PER_SEC));
+		feature->SetField(field_idx, year, month, day, hour, minute, second, 0);
+	} break;
+	case LogicalTypeId::TIMESTAMP_NS: {
+		auto timestamp = value.GetValueUnsafe<timestamp_t>();
+		timestamp = Timestamp::FromEpochNanoSeconds(timestamp.value);
+		auto date = Timestamp::GetDate(timestamp);
+		auto time = Timestamp::GetTime(timestamp);
+		auto year = Date::ExtractYear(date);
+		auto month = Date::ExtractMonth(date);
+		auto day = Date::ExtractDay(date);
+		auto hour = static_cast<int>((time.micros % Interval::MICROS_PER_DAY) / Interval::MICROS_PER_HOUR);
+		auto minute = static_cast<int>((time.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE);
+		auto second = static_cast<float>(static_cast<double>(time.micros % Interval::MICROS_PER_MINUTE) /
+		                                 static_cast<double>(Interval::MICROS_PER_SEC));
+		feature->SetField(field_idx, year, month, day, hour, minute, second, 0);
+	} break;
+	case LogicalTypeId::TIMESTAMP_MS: {
+		auto timestamp = value.GetValueUnsafe<timestamp_t>();
+		timestamp = Timestamp::FromEpochMs(timestamp.value);
+		auto date = Timestamp::GetDate(timestamp);
+		auto time = Timestamp::GetTime(timestamp);
+		auto year = Date::ExtractYear(date);
+		auto month = Date::ExtractMonth(date);
+		auto day = Date::ExtractDay(date);
+		auto hour = static_cast<int>((time.micros % Interval::MICROS_PER_DAY) / Interval::MICROS_PER_HOUR);
+		auto minute = static_cast<int>((time.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE);
+		auto second = static_cast<float>(static_cast<double>(time.micros % Interval::MICROS_PER_MINUTE) /
+		                                 static_cast<double>(Interval::MICROS_PER_SEC));
+		feature->SetField(field_idx, year, month, day, hour, minute, second, 0);
+	} break;
+	case LogicalTypeId::TIMESTAMP_SEC: {
+		auto timestamp = value.GetValueUnsafe<timestamp_t>();
+		timestamp = Timestamp::FromEpochSeconds(timestamp.value);
+		auto date = Timestamp::GetDate(timestamp);
+		auto time = Timestamp::GetTime(timestamp);
+		auto year = Date::ExtractYear(date);
+		auto month = Date::ExtractMonth(date);
+		auto day = Date::ExtractDay(date);
+		auto hour = static_cast<int>((time.micros % Interval::MICROS_PER_DAY) / Interval::MICROS_PER_HOUR);
+		auto minute = static_cast<int>((time.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE);
+		auto second = static_cast<float>(static_cast<double>(time.micros % Interval::MICROS_PER_MINUTE) /
+		                                 static_cast<double>(Interval::MICROS_PER_SEC));
+		feature->SetField(field_idx, year, month, day, hour, minute, second, 0);
+	} break;
+	case LogicalTypeId::TIMESTAMP_TZ: {
+		// Not sure what to with the timezone, just let GDAL parse it?
+		auto timestamp = value.GetValueUnsafe<timestamp_t>();
+		auto time_str = Timestamp::ToString(timestamp);
+		feature->SetField(field_idx, time_str.c_str());
+	} break;
 	default:
-		// TODO: Add time types
 		// TODO: Handle list types
 		throw NotImplementedException("Unsupported field type");
 	}
@@ -375,10 +488,10 @@ static void SetOgrFieldFromValue(OGRFeature *feature, int field_idx, const Logic
 
 static void Sink(ExecutionContext &context, FunctionData &bdata, GlobalFunctionData &gstate, LocalFunctionData &lstate,
                  DataChunk &input) {
-	auto &bind_data = (BindData &)bdata;
-	auto &global_state = (GlobalState &)gstate;
-	auto &local_state = (LocalState &)lstate;
-	local_state.factory.allocator.Reset();
+	auto &bind_data = bdata.Cast<BindData>();
+	auto &global_state = gstate.Cast<GlobalState>();
+	auto &local_state = lstate.Cast<LocalState>();
+	local_state.arena.Reset();
 
 	lock_guard<mutex> d_lock(global_state.lock);
 	auto layer = global_state.layer;
@@ -397,7 +510,16 @@ static void Sink(ExecutionContext &context, FunctionData &bdata, GlobalFunctionD
 
 			if (IsGeometryType(type)) {
 				// TODO: check how many geometry fields there are and use the correct one.
-				auto geom = OGRGeometryFromValue(type, value, local_state.factory);
+				auto geom = OGRGeometryFromValue(type, value, local_state.arena);
+				if (bind_data.geometry_type != wkbUnknown && geom->getGeometryType() != bind_data.geometry_type) {
+					auto got_name =
+					    StringUtil::Replace(StringUtil::Upper(OGRGeometryTypeToName(geom->getGeometryType())), " ", "");
+					auto expected_name =
+					    StringUtil::Replace(StringUtil::Upper(OGRGeometryTypeToName(bind_data.geometry_type)), " ", "");
+					throw InvalidInputException("Expected all geometries to be of type '%s', but got one of type '%s'",
+					                            expected_name, got_name);
+				}
+
 				if (feature->SetGeometry(geom.get()) != OGRERR_NONE) {
 					throw IOException("Could not set geometry");
 				}
@@ -417,7 +539,7 @@ static void Sink(ExecutionContext &context, FunctionData &bdata, GlobalFunctionD
 //===--------------------------------------------------------------------===//
 
 static void Combine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
-					LocalFunctionData &lstate) {
+                    LocalFunctionData &lstate) {
 }
 
 //===--------------------------------------------------------------------===//

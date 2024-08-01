@@ -4,7 +4,6 @@
 #include "spatial/common.hpp"
 #include "spatial/core/types.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "spatial/core/functions/common.hpp"
 
 #include "spatial/geographiclib/functions.hpp"
@@ -13,9 +12,13 @@
 #include "GeographicLib/Geodesic.hpp"
 #include "GeographicLib/PolygonArea.hpp"
 
+#include "cmath"
+
 namespace spatial {
 
 namespace geographiclib {
+
+using namespace core;
 
 //------------------------------------------------------------------------------
 // POLYGON_2D
@@ -59,14 +62,14 @@ static void GeodesicPolygon2DFunction(DataChunk &args, ExpressionState &state, V
 			polygon_area.Compute(false, true, _perimeter, ring_area);
 			if (first) {
 				// Add outer ring
-				area = ring_area;
+				area += std::abs(ring_area);
 				first = false;
 			} else {
 				// Subtract holes
-				area -= ring_area;
+				area -= std::abs(ring_area);
 			}
 		}
-		return area;
+		return std::abs(area);
 	});
 
 	if (count == 1) {
@@ -77,61 +80,34 @@ static void GeodesicPolygon2DFunction(DataChunk &args, ExpressionState &state, V
 //------------------------------------------------------------------------------
 // GEOMETRY
 //------------------------------------------------------------------------------
-static double PolygonArea(const core::Polygon &poly, GeographicLib::PolygonArea &comp) {
-
+static double PolygonArea(const Geometry &poly, GeographicLib::PolygonArea &comp) {
 	double total_area = 0;
 	for (uint32_t ring_idx = 0; ring_idx < poly.Count(); ring_idx++) {
 		comp.Clear();
-		auto &ring = poly.Ring(ring_idx);
+		auto &ring = Polygon::Part(poly, ring_idx);
 		// Note: the last point is the same as the first point, but geographiclib doesn't know that,
 		for (uint32_t coord_idx = 0; coord_idx < ring.Count() - 1; coord_idx++) {
-			auto coord = ring.Get(coord_idx);
+			auto coord = LineString::GetVertex(ring, coord_idx);
 			comp.AddPoint(coord.x, coord.y);
 		}
 		double ring_area;
 		double _perimeter;
+		// We use the absolute value here so that the actual winding order of the polygon rings dont matter.
 		comp.Compute(false, true, _perimeter, ring_area);
 		if (ring_idx == 0) {
 			// Add outer ring
-			total_area = ring_area;
+			total_area += std::abs(ring_area);
 		} else {
 			// Subtract holes
-			total_area -= ring_area;
+			total_area -= std::abs(ring_area);
 		}
 	}
-	return total_area;
-}
-
-static double GeometryArea(const core::Geometry &geom, GeographicLib::PolygonArea &comp) {
-	switch (geom.Type()) {
-	case core::GeometryType::POLYGON: {
-		auto &poly = geom.GetPolygon();
-		return PolygonArea(poly, comp);
-	}
-	case core::GeometryType::MULTIPOLYGON: {
-		auto &mpoly = geom.GetMultiPolygon();
-		double total_area = 0;
-		for (auto &poly : mpoly) {
-			total_area += PolygonArea(poly, comp);
-		}
-		return total_area;
-	}
-	case core::GeometryType::GEOMETRYCOLLECTION: {
-		auto &coll = geom.GetGeometryCollection();
-		double total_area = 0;
-		for (auto &item : coll) {
-			total_area += GeometryArea(item, comp);
-		}
-		return total_area;
-	}
-	default: {
-		return 0.0;
-	}
-	}
+	return std::abs(total_area);
 }
 
 static void GeodesicGeometryFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &lstate = core::GeometryFunctionLocalState::ResetAndGet(state);
+	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 
 	auto &input = args.data[0];
 	auto count = args.size();
@@ -139,9 +115,11 @@ static void GeodesicGeometryFunction(DataChunk &args, ExpressionState &state, Ve
 	const GeographicLib::Geodesic &geod = GeographicLib::Geodesic::WGS84();
 	auto comp = GeographicLib::PolygonArea(geod, false);
 
-	UnaryExecutor::Execute<string_t, double>(input, result, count, [&](string_t input) {
-		auto geometry = lstate.factory.Deserialize(input);
-		return GeometryArea(geometry, comp);
+	UnaryExecutor::Execute<geometry_t, double>(input, result, count, [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(arena, input);
+		double area = 0;
+		Geometry::ExtractPolygons(geom, [&](const Geometry &geom) { area += PolygonArea(geom, comp); });
+		return area;
 	});
 
 	if (count == 1) {
@@ -149,16 +127,34 @@ static void GeodesicGeometryFunction(DataChunk &args, ExpressionState &state, Ve
 	}
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns the area of a geometry in meters, using an ellipsoidal model of the earth
+
+    The input geometry is assumed to be in the [EPSG:4326](https://en.wikipedia.org/wiki/World_Geodetic_System) coordinate system (WGS84), with [latitude, longitude] axis order and the area is returned in square meters. This function uses the [GeographicLib](https://geographiclib.sourceforge.io/) library, calculating the area using an ellipsoidal model of the earth. This is a highly accurate method for calculating the area of a polygon taking the curvature of the earth into account, but is also the slowest.
+
+    Returns `0.0` for any geometry that is not a `POLYGON`, `MULTIPOLYGON` or `GEOMETRYCOLLECTION` containing polygon geometries.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}, {"category", "spheroid"}};
+
 void GeographicLibFunctions::RegisterArea(DatabaseInstance &db) {
 
 	// Area
 	ScalarFunctionSet set("ST_Area_Spheroid");
-	set.AddFunction(
-	    ScalarFunction({spatial::core::GeoTypes::POLYGON_2D()}, LogicalType::DOUBLE, GeodesicPolygon2DFunction));
-	set.AddFunction(ScalarFunction({spatial::core::GeoTypes::GEOMETRY()}, LogicalType::DOUBLE, GeodesicGeometryFunction,
-	                               nullptr, nullptr, nullptr, spatial::core::GeometryFunctionLocalState::Init));
+	set.AddFunction(ScalarFunction({GeoTypes::POLYGON_2D()}, LogicalType::DOUBLE, GeodesicPolygon2DFunction));
+	set.AddFunction(ScalarFunction({GeoTypes::GEOMETRY()}, LogicalType::DOUBLE, GeodesicGeometryFunction, nullptr,
+	                               nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_Area_Spheroid", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geographiclib

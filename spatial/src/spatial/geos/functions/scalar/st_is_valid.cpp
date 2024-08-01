@@ -15,33 +15,36 @@ namespace geos {
 using namespace spatial::core;
 
 static bool IsValidForGeos(Geometry &geometry) {
-	switch (geometry.Type()) {
+	switch (geometry.GetType()) {
 	case GeometryType::LINESTRING:
 		// Every linestring needs 0 or at least 2 points
-		return geometry.GetLineString().Count() != 1;
+		return LineString::VertexCount(geometry) != 1;
 
 	case GeometryType::POLYGON: {
 		// Every ring needs 0 or at least 4 points
-		auto &polygon = geometry.GetPolygon();
-		for (auto &ring : polygon.Rings()) {
-			if (ring.Count() > 0 && ring.Count() < 4) {
+		for (uint32_t i = 0; i < Polygon::PartCount(geometry); i++) {
+			auto &ring = Polygon::Part(geometry, i);
+			if (LineString::VertexCount(ring) < 4) {
 				return false;
 			}
 		}
 		return true;
 	}
 	case GeometryType::MULTILINESTRING: {
-		for (auto &linestring : geometry.GetMultiLineString()) {
-			if (linestring.Count() == 1) {
+		for (uint32_t i = 0; i < MultiLineString::PartCount(geometry); i++) {
+			auto &linestring = MultiLineString::Part(geometry, i);
+			if (LineString::VertexCount(linestring) == 1) {
 				return false;
 			}
 		}
 		return true;
 	}
 	case GeometryType::MULTIPOLYGON: {
-		for (auto &polygon : geometry.GetMultiPolygon()) {
-			for (auto &ring : polygon.Rings()) {
-				if (ring.Count() > 0 && ring.Count() < 4) {
+		for (uint32_t i = 0; i < MultiPolygon::PartCount(geometry); i++) {
+			auto &polygon = MultiPolygon::Part(geometry, i);
+			for (uint32_t j = 0; j < Polygon::PartCount(polygon); j++) {
+				auto &ring = Polygon::Part(polygon, j);
+				if (LineString::VertexCount(ring) < 4) {
 					return false;
 				}
 			}
@@ -49,7 +52,8 @@ static bool IsValidForGeos(Geometry &geometry) {
 		return true;
 	}
 	case GeometryType::GEOMETRYCOLLECTION: {
-		for (auto &geom : geometry.GetGeometryCollection()) {
+		for (uint32_t i = 0; i < GeometryCollection::PartCount(geometry); i++) {
+			auto &geom = GeometryCollection::Part(geometry, i);
 			if (!IsValidForGeos(geom)) {
 				return false;
 			}
@@ -63,8 +67,9 @@ static bool IsValidForGeos(Geometry &geometry) {
 
 static void IsValidFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GEOSFunctionLocalState::ResetAndGet(state);
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t input) {
-		auto geom = lstate.factory.Deserialize(input);
+	auto &arena = lstate.arena;
+	UnaryExecutor::Execute<geometry_t, bool>(args.data[0], result, args.size(), [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(arena, input);
 
 		// double check before calling into geos
 		if (!IsValidForGeos(geom)) {
@@ -76,6 +81,21 @@ static void IsValidFunction(DataChunk &args, ExpressionState &state, Vector &res
 	});
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns true if the geometry is topologically "valid"
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "property"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void GEOSScalarFunctions::RegisterStIsValid(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_IsValid");
@@ -84,6 +104,7 @@ void GEOSScalarFunctions::RegisterStIsValid(DatabaseInstance &db) {
 	                               nullptr, GEOSFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_IsValid", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace geos

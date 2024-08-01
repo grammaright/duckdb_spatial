@@ -14,28 +14,31 @@ namespace core {
 
 static void MakePolygonFromRingsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
 	auto count = args.size();
 
 	auto &child_vec = ListVector::GetEntry(args.data[1]);
 	UnifiedVectorFormat format;
 	child_vec.ToUnifiedFormat(count, format);
 
-	BinaryExecutor::Execute<string_t, list_entry_t, string_t>(
-	    args.data[0], args.data[1], result, count, [&](string_t line_blob, list_entry_t &rings_list) {
+	BinaryExecutor::Execute<geometry_t, list_entry_t, geometry_t>(
+	    args.data[0], args.data[1], result, count, [&](geometry_t line_blob, list_entry_t &rings_list) {
 		    // First, setup the shell
-		    auto shell_geom = lstate.factory.Deserialize(line_blob);
-		    if (shell_geom.Type() != GeometryType::LINESTRING) {
+		    if (line_blob.GetType() != GeometryType::LINESTRING) {
 			    throw InvalidInputException("ST_MakePolygon only accepts LINESTRING geometries");
 		    }
 
-		    auto &shell = shell_geom.GetLineString();
-		    auto shell_vert_count = shell.Count();
-		    if (shell_vert_count < 4) {
+		    // TODO: Support Z and M
+		    if (line_blob.GetProperties().HasM() || line_blob.GetProperties().HasZ()) {
+			    throw InvalidInputException("ST_MakePolygon does not support Z or M geometries");
+		    }
+
+		    auto shell = Geometry::Deserialize(arena, line_blob);
+		    if (LineString::VertexCount(shell) < 4) {
 			    throw InvalidInputException("ST_MakePolygon shell requires at least 4 vertices");
 		    }
 
-		    auto &shell_verts = shell.Vertices();
-		    if (!shell_verts.IsClosed()) {
+		    if (!LineString::IsClosed(shell)) {
 			    throw InvalidInputException(
 			        "ST_MakePolygon shell must be closed (first and last vertex must be equal)");
 		    }
@@ -44,9 +47,7 @@ static void MakePolygonFromRingsFunction(DataChunk &args, ExpressionState &state
 		    auto holes_offset = rings_list.offset;
 		    auto holes_length = rings_list.length;
 
-		    vector<uint32_t> rings_counts;
-		    vector<LineString> rings;
-		    rings_counts.push_back(shell_vert_count);
+		    vector<Geometry> rings;
 		    rings.push_back(shell);
 
 		    for (idx_t hole_idx = 0; hole_idx < holes_length; hole_idx++) {
@@ -55,76 +56,82 @@ static void MakePolygonFromRingsFunction(DataChunk &args, ExpressionState &state
 				    continue;
 			    }
 
-			    auto geometry_blob = UnifiedVectorFormat::GetData<string_t>(format)[mapped_idx];
-			    auto hole_geometry = lstate.factory.Deserialize(geometry_blob);
+			    auto geometry_blob = UnifiedVectorFormat::GetData<geometry_t>(format)[mapped_idx];
 
-			    if (hole_geometry.Type() != GeometryType::LINESTRING) {
+			    // TODO: Support Z and M
+			    if (geometry_blob.GetProperties().HasZ() || geometry_blob.GetProperties().HasM()) {
+				    throw InvalidInputException("ST_MakePolygon does not support Z or M geometries");
+			    }
+			    if (geometry_blob.GetType() != GeometryType::LINESTRING) {
 				    throw InvalidInputException(
 				        StringUtil::Format("ST_MakePolygon hole #%lu is not a LINESTRING geometry", hole_idx + 1));
 			    }
-			    auto &hole = hole_geometry.GetLineString();
-			    auto hole_count = hole.Count();
-			    if (hole_count < 4) {
+			    auto hole = Geometry::Deserialize(arena, geometry_blob);
+			    if (LineString::VertexCount(hole) < 4) {
 				    throw InvalidInputException(
 				        StringUtil::Format("ST_MakePolygon hole #%lu requires at least 4 vertices", hole_idx + 1));
 			    }
 
-			    auto &ring_verts = hole.Vertices();
-			    if (!ring_verts.IsClosed()) {
+			    if (!LineString::IsClosed(hole)) {
 				    throw InvalidInputException(StringUtil::Format(
 				        "ST_MakePolygon hole #%lu must be closed (first and last vertex must be equal)", hole_idx + 1));
 			    }
 
-			    rings_counts.push_back(hole_count);
 			    rings.push_back(hole);
 		    }
-
-		    auto polygon = lstate.factory.CreatePolygon(rings_counts.size(), rings_counts.data());
-
+		    // TODO: Add constructor that takes a vector of rings
+		    auto polygon = Polygon::Create(arena, rings.size(), false, false);
 		    for (idx_t ring_idx = 0; ring_idx < rings.size(); ring_idx++) {
-			    auto &new_ring = rings[ring_idx];
-			    auto &poly_ring = polygon.Ring(ring_idx);
-
-			    for (auto i = 0; i < new_ring.Vertices().Count(); i++) {
-				    poly_ring.Add(new_ring.Vertices().Get(i));
-			    }
+			    Polygon::Part(polygon, ring_idx) = std::move(rings[ring_idx]);
 		    }
-
-		    return lstate.factory.Serialize(result, Geometry(polygon));
+		    return Geometry::Serialize(polygon, result);
 	    });
 }
 
 static void MakePolygonFromShellFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &lstate = GeometryFunctionLocalState::ResetAndGet(state);
+	auto &arena = lstate.arena;
+
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, count, [&](string_t &line_blob) {
-		auto line_geom = lstate.factory.Deserialize(line_blob);
-
-		if (line_geom.Type() != GeometryType::LINESTRING) {
+	UnaryExecutor::Execute<geometry_t, geometry_t>(args.data[0], result, count, [&](geometry_t &line_blob) {
+		if (line_blob.GetType() != GeometryType::LINESTRING) {
 			throw InvalidInputException("ST_MakePolygon only accepts LINESTRING geometries");
 		}
 
-		auto &line = line_geom.GetLineString();
-		auto line_count = line.Count();
-		if (line_count < 4) {
+		auto line = Geometry::Deserialize(arena, line_blob);
+
+		if (LineString::VertexCount(line) < 4) {
 			throw InvalidInputException("ST_MakePolygon shell requires at least 4 vertices");
 		}
 
-		auto &line_verts = line.Vertices();
-		if (!line_verts.IsClosed()) {
+		if (!LineString::IsClosed(line)) {
 			throw InvalidInputException("ST_MakePolygon shell must be closed (first and last vertex must be equal)");
 		}
 
-		auto polygon = lstate.factory.CreatePolygon(1, &line_count);
-		for (uint32_t i = 0; i < line_count; i++) {
-			polygon.Shell().Add(line_verts.Get(i));
-		}
+		auto props = line_blob.GetProperties();
 
-		return lstate.factory.Serialize(result, Geometry(polygon));
+		auto polygon = Polygon::Create(arena, 1, props.HasZ(), props.HasM());
+		Polygon::Part(polygon, 0) = std::move(line);
+		return Geometry::Serialize(polygon, result);
 	});
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Creates a polygon from a shell geometry and an optional set of holes
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+//------------------------------------------------------------------------------
+// Register Functions
+//------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterStMakePolygon(DatabaseInstance &db) {
 
 	ScalarFunctionSet set("ST_MakePolygon");
@@ -137,6 +144,7 @@ void CoreScalarFunctions::RegisterStMakePolygon(DatabaseInstance &db) {
 	                               nullptr, nullptr, GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, set);
+	DocUtil::AddDocumentation(db, "ST_MakePolygon", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

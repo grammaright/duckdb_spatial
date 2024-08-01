@@ -153,79 +153,6 @@ static void BoxFlipCoordinatesFunction(DataChunk &args, ExpressionState &state, 
 //------------------------------------------------------------------------------
 // GEOMETRY
 //------------------------------------------------------------------------------
-static void FlipVertexVector(VertexVector &vertices) {
-	for (idx_t i = 0; i < vertices.count; i++) {
-		auto vertex = vertices.Get(i);
-		std::swap(vertex.x, vertex.y);
-		vertices.Set(i, vertex);
-	}
-}
-static void FlipGeometry(Point &point) {
-	FlipVertexVector(point.Vertices());
-}
-
-static void FlipGeometry(LineString &line) {
-	FlipVertexVector(line.Vertices());
-}
-
-static void FlipGeometry(Polygon &poly) {
-	for (auto &ring : poly.Rings()) {
-		FlipVertexVector(ring);
-	}
-}
-
-static void FlipGeometry(MultiPoint &multi_point) {
-	for (auto &point : multi_point) {
-		FlipGeometry(point);
-	}
-}
-
-static void FlipGeometry(MultiLineString &multi_line) {
-	for (auto &line : multi_line) {
-		FlipGeometry(line);
-	}
-}
-
-static void FlipGeometry(MultiPolygon &multi_poly) {
-	for (auto &poly : multi_poly) {
-		FlipGeometry(poly);
-	}
-}
-
-static void FlipGeometry(Geometry &geom);
-static void FlipGeometry(GeometryCollection &geom) {
-	for (auto &child : geom) {
-		FlipGeometry(child);
-	}
-}
-
-static void FlipGeometry(Geometry &geom) {
-	switch (geom.Type()) {
-	case GeometryType::POINT:
-		FlipGeometry(geom.GetPoint());
-		break;
-	case GeometryType::LINESTRING:
-		FlipGeometry(geom.GetLineString());
-		break;
-	case GeometryType::POLYGON:
-		FlipGeometry(geom.GetPolygon());
-		break;
-	case GeometryType::MULTIPOINT:
-		FlipGeometry(geom.GetMultiPoint());
-		break;
-	case GeometryType::MULTILINESTRING:
-		FlipGeometry(geom.GetMultiLineString());
-		break;
-	case GeometryType::MULTIPOLYGON:
-		FlipGeometry(geom.GetMultiPolygon());
-		break;
-	case GeometryType::GEOMETRYCOLLECTION:
-		FlipGeometry(geom.GetGeometryCollection());
-		break;
-	default:
-		throw NotImplementedException("Unimplemented geometry type!");
-	}
-}
 
 static void GeometryFlipCoordinatesFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
@@ -234,14 +161,40 @@ static void GeometryFlipCoordinatesFunction(DataChunk &args, ExpressionState &st
 	auto input = args.data[0];
 	auto count = args.size();
 
-	UnaryExecutor::Execute<string_t, string_t>(input, result, count, [&](string_t input) {
-		auto geom = lstate.factory.Deserialize(input);
-		auto copy = lstate.factory.CopyGeometry(geom);
-		FlipGeometry(copy);
-		return lstate.factory.Serialize(result, copy);
+	struct op {
+		static void Case(Geometry::Tags::SinglePartGeometry, Geometry &geom, ArenaAllocator &arena) {
+			SinglePartGeometry::MakeMutable(geom, arena);
+			for (idx_t i = 0; i < SinglePartGeometry::VertexCount(geom); i++) {
+				auto vertex = SinglePartGeometry::GetVertex(geom, i);
+				std::swap(vertex.x, vertex.y);
+				SinglePartGeometry::SetVertex(geom, i, vertex);
+			}
+		}
+		static void Case(Geometry::Tags::MultiPartGeometry, Geometry &geom, ArenaAllocator &arena) {
+			for (uint32_t i = 0; i < MultiPartGeometry::PartCount(geom); i++) {
+				auto &part = MultiPartGeometry::Part(geom, i);
+				Geometry::Match<op>(part, arena);
+			}
+		}
+	};
+
+	UnaryExecutor::Execute<geometry_t, geometry_t>(input, result, count, [&](geometry_t input) {
+		auto geom = Geometry::Deserialize(lstate.arena, input);
+		Geometry::Match<op>(geom, lstate.arena);
+		return Geometry::Serialize(geom, result);
 	});
 }
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Returns a new geometry with the coordinates of the input geometry "flipped" so that x = y and y = x.
+)";
+
+static constexpr const char *DOC_EXAMPLE = R"()";
+
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
 //------------------------------------------------------------------------------
 // Register functions
 //------------------------------------------------------------------------------
@@ -259,6 +212,7 @@ void CoreScalarFunctions::RegisterStFlipCoordinates(DatabaseInstance &db) {
 	                                             GeometryFunctionLocalState::Init));
 
 	ExtensionUtil::RegisterFunction(db, flip_function_set);
+	DocUtil::AddDocumentation(db, "ST_FlipCoordinates", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core

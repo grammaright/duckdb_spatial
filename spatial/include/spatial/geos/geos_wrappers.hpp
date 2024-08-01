@@ -1,12 +1,13 @@
 #pragma once
 #include "spatial/common.hpp"
 #include "spatial/core/geometry/geometry.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
 #include "geos_c.h"
 
 namespace spatial {
 
 namespace geos {
+
+using namespace core;
 
 template <class T>
 struct GeosDeleter {
@@ -202,12 +203,12 @@ public:
 		return WKTReader(ctx);
 	}
 
-	unique_ptr<GEOSGeometry, GeosDeleter<GEOSGeometry>> Deserialize(const string_t &blob);
-	string_t Serialize(Vector &result, const unique_ptr<GEOSGeometry, GeosDeleter<GEOSGeometry>> &geom);
+	unique_ptr<GEOSGeometry, GeosDeleter<GEOSGeometry>> Deserialize(const geometry_t &blob);
+	geometry_t Serialize(Vector &result, const unique_ptr<GEOSGeometry, GeosDeleter<GEOSGeometry>> &geom);
 };
 
-GEOSGeometry *DeserializeGEOSGeometry(const string_t &blob, GEOSContextHandle_t ctx);
-string_t SerializeGEOSGeometry(Vector &result, const GEOSGeometry *geom, GEOSContextHandle_t ctx);
+GEOSGeometry *DeserializeGEOSGeometry(const geometry_t &blob, GEOSContextHandle_t ctx);
+geometry_t SerializeGEOSGeometry(Vector &result, const GEOSGeometry *geom, GEOSContextHandle_t ctx);
 
 } // namespace geos
 

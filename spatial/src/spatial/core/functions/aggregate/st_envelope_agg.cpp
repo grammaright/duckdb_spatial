@@ -2,8 +2,10 @@
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 
 #include "spatial/common.hpp"
-#include "spatial/core/geometry/geometry_factory.hpp"
+#include "spatial/core/geometry/geometry.hpp"
+#include "spatial/core/geometry/bbox.hpp"
 #include "spatial/core/functions/aggregate.hpp"
+#include "spatial/core/types.hpp"
 
 namespace spatial {
 
@@ -45,7 +47,7 @@ struct EnvelopeAggFunction {
 	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &) {
 		BoundingBox bbox;
 		if (!state.is_set) {
-			if (GeometryFactory::TryGetSerializedBoundingBox(input, bbox)) {
+			if (input.TryGetCachedBounds(bbox)) {
 				state.is_set = true;
 				state.xmin = bbox.minx;
 				state.xmax = bbox.maxx;
@@ -53,7 +55,7 @@ struct EnvelopeAggFunction {
 				state.ymax = bbox.maxy;
 			}
 		} else {
-			if (GeometryFactory::TryGetSerializedBoundingBox(input, bbox)) {
+			if (input.TryGetCachedBounds(bbox)) {
 				state.xmin = std::min(state.xmin, bbox.minx);
 				state.xmax = std::max(state.xmax, bbox.maxx);
 				state.ymin = std::min(state.ymin, bbox.miny);
@@ -72,11 +74,9 @@ struct EnvelopeAggFunction {
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
 		} else {
-			auto &arena_alloc = finalize_data.input.allocator;
-			auto &alloc = arena_alloc.GetAllocator();
-			GeometryFactory factory(alloc);
-			auto box = factory.CreateBox(state.xmin, state.ymin, state.xmax, state.ymax);
-			target = factory.Serialize(finalize_data.result, box);
+			auto &arena = finalize_data.input.allocator;
+			auto box = Polygon::CreateFromBox(arena, state.xmin, state.ymin, state.xmax, state.ymax);
+			target = Geometry::Serialize(box, finalize_data.result);
 		}
 	}
 
@@ -85,6 +85,17 @@ struct EnvelopeAggFunction {
 	}
 };
 
+//------------------------------------------------------------------------------
+// Documentation
+//------------------------------------------------------------------------------
+static constexpr DocTag DOC_TAGS[] = {{"ext", "spatial"}, {"category", "construction"}};
+static constexpr const char *DOC_DESCRIPTION = R"(
+    Computes a minimal-bounding-box polygon 'enveloping' the set of input geometries
+)";
+static constexpr const char *DOC_EXAMPLE = R"(
+
+)";
+
 //------------------------------------------------------------------------
 // Register
 //------------------------------------------------------------------------
@@ -92,10 +103,11 @@ void CoreAggregateFunctions::RegisterStEnvelopeAgg(DatabaseInstance &db) {
 
 	AggregateFunctionSet st_envelope_agg("ST_Envelope_Agg");
 	st_envelope_agg.AddFunction(
-	    AggregateFunction::UnaryAggregate<EnvelopeAggState, string_t, string_t, EnvelopeAggFunction>(
-	        core::GeoTypes::GEOMETRY(), core::GeoTypes::GEOMETRY()));
+	    AggregateFunction::UnaryAggregate<EnvelopeAggState, geometry_t, geometry_t, EnvelopeAggFunction>(
+	        GeoTypes::GEOMETRY(), GeoTypes::GEOMETRY()));
 
 	ExtensionUtil::RegisterFunction(db, st_envelope_agg);
+	DocUtil::AddDocumentation(db, "ST_Envelope_Agg", DOC_DESCRIPTION, DOC_EXAMPLE, DOC_TAGS);
 }
 
 } // namespace core
